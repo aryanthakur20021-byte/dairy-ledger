@@ -368,6 +368,15 @@
   .calc-btn.calc-eq:active{ background:var(--forest-3); }
   .calc-btn.calc-fn{ color:var(--terracotta-dark); }
   .calc-btn.calc-zero{ grid-column:span 2; }
+  .calc-history-head{ display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; }
+  .calc-history-head span{ font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.06em; color:var(--ink-faint); }
+  .calc-history-clear{ font-size:11.5px; font-weight:700; color:var(--terracotta-dark); }
+  .calc-history{ max-height:110px; overflow-y:auto; margin-bottom:10px; border-bottom:1px solid var(--line); }
+  .calc-history-empty{ font-size:12px; color:var(--ink-faint); padding:6px 2px 12px; }
+  .calc-history-row{ display:flex; justify-content:space-between; align-items:baseline; gap:10px; padding:6px 2px; font-size:12.5px; color:var(--ink-soft); border-top:1px solid var(--line); }
+  .calc-history-row:first-child{ border-top:none; }
+  .calc-history-row span{ overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .calc-history-row b{ color:var(--ink); font-weight:700; flex-shrink:0; }
 </style>
 </head>
 <body>
@@ -952,8 +961,22 @@
 
   document.getElementById('calcBtn').addEventListener('click', openCalculator);
 
+  var CALC_HISTORY_KEY = 'dairyLedgerCalcHistory';
+  function loadCalcHistory(){
+    try{
+      var raw = localStorage.getItem(CALC_HISTORY_KEY);
+      var arr = raw ? JSON.parse(raw) : [];
+      return Array.isArray(arr) ? arr : [];
+    }catch(e){ return []; }
+  }
+  function saveCalcHistory(arr){
+    try{ localStorage.setItem(CALC_HISTORY_KEY, JSON.stringify(arr.slice(0,50))); }catch(e){}
+  }
+
   function openCalculator(){
     var html = '<h2>Calculator</h2>' +
+      '<div class="calc-history-head"><span>History</span><button type="button" class="calc-history-clear" id="calcHistClear">Clear</button></div>' +
+      '<div class="calc-history" id="calcHistory"></div>' +
       '<div class="calc-display num" id="calcDisplay">0</div>' +
       '<div class="calc-grid">' +
         '<button class="calc-btn calc-fn" data-act="clear">C</button>' +
@@ -979,12 +1002,35 @@
 
     openSheet(html, function(root){
       var displayEl = root.querySelector('#calcDisplay');
+      var histEl = root.querySelector('#calcHistory');
+      var history = loadCalcHistory();
       var current = '0';
       var previous = null;
       var pendingOp = null;
       var overwrite = true;
 
       function render_(){ displayEl.textContent = current; }
+      function renderHistory(){
+        if(!history.length){
+          histEl.innerHTML = '<div class="calc-history-empty">No calculations yet</div>';
+          return;
+        }
+        histEl.innerHTML = history.map(function(h){
+          return '<div class="calc-history-row" data-result="'+esc(h.result)+'">' +
+            '<span>'+esc(h.expr)+'</span><b class="num">'+esc(h.result)+'</b></div>';
+        }).join('');
+        histEl.querySelectorAll('.calc-history-row').forEach(function(row){
+          row.addEventListener('click', function(){
+            current = row.getAttribute('data-result');
+            previous = null; pendingOp = null; overwrite = false;
+            render_();
+          });
+        });
+      }
+      renderHistory();
+      root.querySelector('#calcHistClear').addEventListener('click', function(){
+        history = []; saveCalcHistory(history); renderHistory();
+      });
       function compute(a, b, op){
         a = parseFloat(a); b = parseFloat(b);
         var r;
@@ -1020,7 +1066,15 @@
           }
           else if(act==='eq'){
             if(pendingOp!==null){
-              current = compute(previous, current, pendingOp);
+              var exprStr = previous + ' ' + pendingOp + ' ' + current;
+              var result = compute(previous, current, pendingOp);
+              if(result !== 'Error'){
+                history.unshift({ expr: exprStr, result: result });
+                history = history.slice(0,50);
+                saveCalcHistory(history);
+                renderHistory();
+              }
+              current = result;
               previous = null; pendingOp = null; overwrite = true;
             }
           }
