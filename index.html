@@ -93,6 +93,15 @@
   }
   .month-chip:active{background:rgba(250,242,223,0.22);}
   .month-chip svg{width:13px;height:13px;opacity:.85;}
+  .topbar-icon-btn{
+    width:34px;height:34px;border-radius:100px;flex-shrink:0;margin-right:8px;
+    background:rgba(250,242,223,0.12); color:var(--cream);
+    border:1px solid rgba(250,242,223,0.18);
+    display:flex;align-items:center;justify-content:center;
+    transition:background .25s var(--ease);
+  }
+  .topbar-icon-btn:active{background:rgba(250,242,223,0.22);}
+  .topbar-icon-btn svg{width:16px;height:16px;}
   .offline-badge{
     display:none; align-items:center; gap:5px;
     background:rgba(220,159,44,0.22); color:var(--gold-light);
@@ -338,6 +347,27 @@
     .app, .tabbar, .fab, .sheet, .sheet-overlay, .toast{ display:none !important; }
     #printArea{ display:block !important; color:#000; background:#fff; max-width:720px; margin:0 auto; padding:20px; }
   }
+
+  /* ---------- calculator ---------- */
+  .calc-display{
+    background:var(--forest); color:var(--cream); border-radius:14px;
+    padding:22px 16px; text-align:right; font-size:34px; font-weight:700;
+    font-family:Georgia,"Iowan Old Style","Palatino Linotype",Palatino,serif;
+    margin-bottom:14px; overflow-x:auto; white-space:nowrap;
+  }
+  .calc-grid{ display:grid; grid-template-columns:repeat(4,1fr); gap:8px; }
+  .calc-btn{
+    background:var(--cream-2); border-radius:12px; padding:18px 0;
+    font-size:19px; font-weight:700; color:var(--ink); text-align:center;
+    transition:background .15s var(--ease);
+  }
+  .calc-btn:active{ background:var(--line); }
+  .calc-btn.calc-op{ background:var(--gold); color:var(--forest-2); }
+  .calc-btn.calc-op:active{ background:var(--gold-light); }
+  .calc-btn.calc-eq{ background:var(--forest); color:var(--cream); }
+  .calc-btn.calc-eq:active{ background:var(--forest-3); }
+  .calc-btn.calc-fn{ color:var(--terracotta-dark); }
+  .calc-btn.calc-zero{ grid-column:span 2; }
 </style>
 </head>
 <body>
@@ -353,6 +383,9 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M2 8.5a17 17 0 0 1 20 0M5.5 12.2a12 12 0 0 1 13 0M9 15.8a7 7 0 0 1 6 0"/><path d="M3 3l18 18"/></svg>
           Offline
         </span>
+        <button class="topbar-icon-btn" id="calcBtn" aria-label="Calculator">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="3" width="16" height="18" rx="2.5"/><path d="M8 7h8M8 12h.01M12 12h.01M16 12h.01M8 16h.01M12 16h.01M16 16h.01"/></svg>
+        </button>
         <button class="month-chip" id="monthBtn">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="5" width="18" height="16" rx="3"/><path d="M3 10h18M8 3v4M16 3v4"/></svg>
           <span id="monthLabel">Aug 2026</span>
@@ -916,6 +949,86 @@
       }
     );
   });
+
+  document.getElementById('calcBtn').addEventListener('click', openCalculator);
+
+  function openCalculator(){
+    var html = '<h2>Calculator</h2>' +
+      '<div class="calc-display num" id="calcDisplay">0</div>' +
+      '<div class="calc-grid">' +
+        '<button class="calc-btn calc-fn" data-act="clear">C</button>' +
+        '<button class="calc-btn calc-fn" data-act="back">⌫</button>' +
+        '<button class="calc-btn calc-fn" data-act="percent">%</button>' +
+        '<button class="calc-btn calc-op" data-act="op" data-op="÷">÷</button>' +
+        '<button class="calc-btn" data-act="num" data-n="7">7</button>' +
+        '<button class="calc-btn" data-act="num" data-n="8">8</button>' +
+        '<button class="calc-btn" data-act="num" data-n="9">9</button>' +
+        '<button class="calc-btn calc-op" data-act="op" data-op="×">×</button>' +
+        '<button class="calc-btn" data-act="num" data-n="4">4</button>' +
+        '<button class="calc-btn" data-act="num" data-n="5">5</button>' +
+        '<button class="calc-btn" data-act="num" data-n="6">6</button>' +
+        '<button class="calc-btn calc-op" data-act="op" data-op="−">−</button>' +
+        '<button class="calc-btn" data-act="num" data-n="1">1</button>' +
+        '<button class="calc-btn" data-act="num" data-n="2">2</button>' +
+        '<button class="calc-btn" data-act="num" data-n="3">3</button>' +
+        '<button class="calc-btn calc-op" data-act="op" data-op="+">+</button>' +
+        '<button class="calc-btn calc-zero" data-act="num" data-n="0">0</button>' +
+        '<button class="calc-btn" data-act="dot">.</button>' +
+        '<button class="calc-btn calc-eq" data-act="eq">=</button>' +
+      '</div>';
+
+    openSheet(html, function(root){
+      var displayEl = root.querySelector('#calcDisplay');
+      var current = '0';
+      var previous = null;
+      var pendingOp = null;
+      var overwrite = true;
+
+      function render_(){ displayEl.textContent = current; }
+      function compute(a, b, op){
+        a = parseFloat(a); b = parseFloat(b);
+        var r;
+        if(op==='+') r = a+b;
+        else if(op==='−') r = a-b;
+        else if(op==='×') r = a*b;
+        else if(op==='÷') r = b===0 ? NaN : a/b;
+        if(isNaN(r) || !isFinite(r)) return 'Error';
+        return String(Math.round(r*1e8)/1e8);
+      }
+      function inputDigit(d){
+        if(current==='Error') current='0';
+        if(overwrite){ current = d==='.' ? '0.' : d; overwrite = false; }
+        else if(d==='.'){ if(current.indexOf('.')===-1) current += '.'; }
+        else { current = current==='0' ? d : current + d; }
+      }
+      root.querySelectorAll('.calc-btn').forEach(function(btn){
+        btn.addEventListener('click', function(){
+          var act = btn.getAttribute('data-act');
+          if(act==='num') inputDigit(btn.getAttribute('data-n'));
+          else if(act==='dot') inputDigit('.');
+          else if(act==='clear'){ current='0'; previous=null; pendingOp=null; overwrite=true; }
+          else if(act==='back'){
+            if(!overwrite && current.length>1) current = current.slice(0,-1);
+            else current = '0';
+          }
+          else if(act==='percent'){ current = String((parseFloat(current)||0)/100); overwrite=false; }
+          else if(act==='op'){
+            if(pendingOp && !overwrite && current!=='Error') current = compute(previous, current, pendingOp);
+            previous = current==='Error' ? '0' : current;
+            pendingOp = btn.getAttribute('data-op');
+            overwrite = true;
+          }
+          else if(act==='eq'){
+            if(pendingOp!==null){
+              current = compute(previous, current, pendingOp);
+              previous = null; pendingOp = null; overwrite = true;
+            }
+          }
+          render_();
+        });
+      });
+    });
+  }
 
   /* ================= HOME ================= */
   function renderHome(){
