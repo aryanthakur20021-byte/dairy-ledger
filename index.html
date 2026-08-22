@@ -453,7 +453,7 @@
   var db = load();
 
   function defaultDB(){
-    return { clients:[], cattle:[], supply:[], production:[], expenses:[] };
+    return { clients:[], cattle:[], supply:[], production:[], expenses:[], health:[] };
   }
   function load(){
     try{
@@ -491,7 +491,7 @@
     messagingSenderId: "557857723065",
     appId: "1:557857723065:web:b42e234a90a8224d31c168"
   };
-  var CLOUD_COLLECTIONS = ['clients','cattle','supply','production','expenses'];
+  var CLOUD_COLLECTIONS = ['clients','cattle','supply','production','expenses','health'];
   var FIREBASE_SDK_VERSION = '10.14.1';
 
   var authUser = null;        // null = guest; Firebase User object once signed in
@@ -781,6 +781,29 @@
     var d = new Date(iso + 'T00:00:00');
     return d.toLocaleDateString('en-IN', {day:'2-digit', month:'short'});
   }
+  function addDays(iso, n){
+    var d = new Date(iso + 'T00:00:00');
+    d.setDate(d.getDate() + n);
+    var tz = d.getTimezoneOffset()*60000;
+    return new Date(d - tz).toISOString().slice(0,10);
+  }
+  function daysBetween(fromIso, toIso){
+    return Math.round((Date.parse(toIso) - Date.parse(fromIso)) / 86400000);
+  }
+  function computeAge(dobIso){
+    if(!dobIso) return '';
+    var dob = new Date(dobIso + 'T00:00:00'), now = new Date();
+    var years = now.getFullYear() - dob.getFullYear();
+    var months = now.getMonth() - dob.getMonth();
+    if(now.getDate() < dob.getDate()) months--;
+    if(months < 0){ years--; months += 12; }
+    if(years <= 0 && months <= 0) return 'Under 1 mo';
+    var parts = [];
+    if(years > 0) parts.push(years + (years===1?' yr':' yrs'));
+    if(months > 0) parts.push(months + (months===1?' mo':' mos'));
+    return parts.join(' ');
+  }
+  function gestationDays(species){ return species === 'buffalo' ? 310 : 283; }
   function esc(s){
     return String(s==null?'':s).replace(/[&<>"']/g, function(c){
       return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
@@ -795,6 +818,94 @@
   function clientById(id){ return db.clients.find(function(c){return c.id===id;}); }
   function cattleById(id){ return db.cattle.find(function(c){return c.id===id;}); }
   function inMonth(iso, ym){ return iso && iso.slice(0,7) === ym; }
+
+  /* ================= health / breeding ================= */
+  function healthByCattle(cattleId){
+    return db.health.filter(function(h){return h.cattleId===cattleId;})
+      .sort(function(a,b){ return a.date < b.date ? -1 : (a.date > b.date ? 1 : 0); });
+  }
+  function healthById(id){ return db.health.find(function(h){return h.id===id;}); }
+
+  function animalStatus(cattleId){
+    var c = cattleById(cattleId);
+    var species = (c && c.species) || 'cow';
+    var events = healthByCattle(cattleId);
+    var lastCalving=null, lastAI=null, lastCheck=null, lastHeat=null;
+    events.forEach(function(e){
+      if(e.type==='calving'){ lastCalving=e; lastAI=null; lastCheck=null; }
+      else if(e.type==='ai'){ if(!lastCalving || e.date > lastCalving.date){ lastAI=e; lastCheck=null; } }
+      else if(e.type==='pregnancy_check'){ if(lastAI && e.date >= lastAI.date){ lastCheck=e; } }
+      else if(e.type==='heat'){ if(!lastCalving || e.date > lastCalving.date){ lastHeat=e; } }
+    });
+    var today = todayISO();
+    if(lastCheck && lastCheck.result==='pregnant'){
+      var due = addDays(lastAI.date, gestationDays(species));
+      return { state:'pregnant', label:'Pregnant', sub:'Day '+daysBetween(lastAI.date, today)+' · due '+dateShort(due), dueDate:due, lastAI:lastAI, lastCheck:lastCheck, lastHeat:lastHeat };
+    }
+    if(lastCheck && lastCheck.result==='inconclusive'){
+      var recheckDue = addDays(lastCheck.date, 30);
+      var minRecheck = addDays(lastAI.date, 90);
+      if(Date.parse(minRecheck) > Date.parse(recheckDue)) recheckDue = minRecheck;
+      return { state:'recheck', label:'Recheck needed', sub:'Inconclusive '+dateShort(lastCheck.date)+' · recheck '+(today>=recheckDue?'now':'around '+dateShort(recheckDue)), recheckDue:recheckDue, lastAI:lastAI, lastCheck:lastCheck, lastHeat:lastHeat };
+    }
+    if(lastCheck && lastCheck.result==='not_pregnant'){
+      var nextHeat1 = lastHeat ? addDays(lastHeat.date, 21) : null;
+      return { state:'open', label:'Open (not pregnant)', sub: lastHeat ? 'Last heat '+dateShort(lastHeat.date) : 'Checked '+dateShort(lastCheck.date), lastAI:lastAI, lastCheck:lastCheck, lastHeat:lastHeat, nextHeatEst:nextHeat1 };
+    }
+    if(lastAI){
+      var checkDue = addDays(lastAI.date, 45);
+      return { state:'awaiting_check', label:'AI’d — check due', sub:'AI on '+dateShort(lastAI.date)+' · check '+(today>=checkDue?'now':'around '+dateShort(checkDue)), checkDue:checkDue, lastAI:lastAI, lastHeat:lastHeat };
+    }
+    if(lastCalving){
+      return { state:'fresh', label:'Milking', sub:daysBetween(lastCalving.date, today)+' days since calving', lastCalving:lastCalving, lastHeat:lastHeat };
+    }
+    if(lastHeat){
+      return { state:'open', label:'Open', sub:'Last heat '+dateShort(lastHeat.date), lastHeat:lastHeat, nextHeatEst:addDays(lastHeat.date, 21) };
+    }
+    return { state:'none', label:'No breeding record', sub:'' };
+  }
+
+  function dueReminders(){
+    var today = todayISO();
+    var out = [];
+    db.cattle.forEach(function(c){
+      var st = animalStatus(c.id);
+      if(st.state==='awaiting_check' && today >= st.checkDue){
+        out.push({cattleId:c.id, name:c.name, kind:'check', label:'Pregnancy check due', daysUntil:daysBetween(today, st.checkDue)});
+      }
+      if(st.state==='recheck' && today >= st.recheckDue){
+        out.push({cattleId:c.id, name:c.name, kind:'recheck', label:'Pregnancy recheck due', daysUntil:daysBetween(today, st.recheckDue)});
+      }
+      if(st.state==='pregnant'){
+        var du = daysBetween(today, st.dueDate);
+        if(du <= 14){
+          out.push({cattleId:c.id, name:c.name, kind:'calving', label: du<=0 ? 'Calving due now' : 'Calving in ~'+du+'d', daysUntil:du});
+        }
+      }
+      if(st.state==='open' && st.nextHeatEst){
+        var dh = daysBetween(today, st.nextHeatEst);
+        if(dh <= 3 && dh >= -10){
+          out.push({cattleId:c.id, name:c.name, kind:'heat', label: dh<=0 ? 'Heat expected — watch closely' : 'Heat expected in ~'+dh+'d', daysUntil:dh});
+        }
+      }
+      var events = healthByCattle(c.id);
+      var lastVax=null, lastDeworm=null;
+      events.forEach(function(e){
+        if(e.type==='vaccination') lastVax=e;
+        if(e.type==='deworming') lastDeworm=e;
+      });
+      if(lastVax && lastVax.nextDue){
+        var dv = daysBetween(today, lastVax.nextDue);
+        if(dv <= 7) out.push({cattleId:c.id, name:c.name, kind:'vaccination', label:(dv<0?'Vaccination overdue':dv===0?'Vaccination due today':'Vaccination due in '+dv+'d'), daysUntil:dv});
+      }
+      if(lastDeworm && lastDeworm.nextDue){
+        var dd = daysBetween(today, lastDeworm.nextDue);
+        if(dd <= 7) out.push({cattleId:c.id, name:c.name, kind:'deworming', label:(dd<0?'Deworming overdue':dd===0?'Deworming due today':'Deworming due in '+dd+'d'), daysUntil:dd});
+      }
+    });
+    out.sort(function(a,b){ return a.daysUntil - b.daysUntil; });
+    return out;
+  }
 
   function supplyDue(entry){ return Math.max(0, (Number(entry.amount)||0) - (Number(entry.paidAmt)||0)); }
 
@@ -1108,6 +1219,25 @@
     html += kpiCard('Net (this month)', money(net), 'sales − expenses', 'gold');
     html += '</div>';
 
+    var reminders = dueReminders();
+    if(reminders.length){
+      html += '<div class="section-title">Reminders</div>';
+      html += '<div class="card">';
+      reminders.slice(0,5).forEach(function(r){
+        var overdue = r.daysUntil <= 0;
+        html += '<div class="due-row"><div style="display:flex;align-items:center;gap:10px;min-width:0;">' +
+          '<div class="avatar">'+esc(initials(r.name))+'</div>' +
+          '<div style="min-width:0;"><div class="due-name" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+esc(r.name)+'</div>' +
+          '<div style="font-size:11.5px;color:'+(overdue?'var(--bad)':'var(--ink-soft)')+';">'+esc(r.label)+'</div></div></div>' +
+          '<button class="settle-btn" data-reminder-cattle="'+r.cattleId+'">View</button>' +
+          '</div>';
+      });
+      if(reminders.length > 5){
+        html += '<div style="text-align:center;margin-top:8px;"><span style="font-size:12px;color:var(--ink-faint);">+'+(reminders.length-5)+' more — see More tab</span></div>';
+      }
+      html += '</div>';
+    }
+
     html += '<div class="section-title">Outstanding Dues</div>';
     html += '<div class="card">';
     if(allDue < 0.01){
@@ -1144,6 +1274,9 @@
 
     $view.querySelectorAll('[data-settle]').forEach(function(btn){
       btn.addEventListener('click', function(){ openSettleForm(btn.getAttribute('data-settle')); });
+    });
+    $view.querySelectorAll('[data-reminder-cattle]').forEach(function(btn){
+      btn.addEventListener('click', function(){ openAnimalDetail(btn.getAttribute('data-reminder-cattle')); });
     });
   }
   function sumByCat(list, cat){
@@ -1622,8 +1755,9 @@
     html += '<div class="section-title">Cattle ('+db.cattle.length+')</div>';
     html += '<div class="list">';
     db.cattle.forEach(function(c){
+      var st = animalStatus(c.id);
       html += '<div class="row" data-edit-cattle="'+c.id+'"><div class="row-main">' +
-        '<div class="row-title">'+esc(c.name)+'</div><div class="row-sub">'+esc(c.tag||'No tag')+'</div></div></div>';
+        '<div class="row-title">'+esc(c.name)+'</div><div class="row-sub">'+esc(c.tag||'No tag')+' · '+esc(st.label)+'</div></div></div>';
     });
     html += '<button class="row" id="addCattle" style="justify-content:center;border-style:dashed;color:var(--forest);font-weight:700;">+ Add Animal</button>';
     html += '</div>';
@@ -1664,7 +1798,7 @@
       row.addEventListener('click', function(){ openClientForm(row.getAttribute('data-edit-client')); });
     });
     $view.querySelectorAll('[data-edit-cattle]').forEach(function(row){
-      row.addEventListener('click', function(){ openCattleForm(row.getAttribute('data-edit-cattle')); });
+      row.addEventListener('click', function(){ openAnimalDetail(row.getAttribute('data-edit-cattle')); });
     });
     var signInBtn = $view.querySelector('#signInBtn');
     var signUpBtn = $view.querySelector('#signUpBtn');
@@ -1727,11 +1861,28 @@
     });
   }
 
-  function openCattleForm(id){
+  function openCattleForm(id, afterSave){
     var editing = id ? cattleById(id) : null;
     var html = '<h2>'+(editing?'Edit':'Add')+' Animal</h2>';
     html += '<div class="field"><label>Name</label><input type="text" id="aName" enterkeyhint="next" value="'+(editing?esc(editing.name):'')+'" placeholder="e.g. Ganga"></div>';
-    html += '<div class="field"><label>Tag / ID (optional)</label><input type="text" id="aTag" enterkeyhint="done" value="'+(editing?esc(editing.tag||''):'')+'"></div>';
+    html += '<div class="field"><label>Tag / ID (optional)</label><input type="text" id="aTag" enterkeyhint="next" value="'+(editing?esc(editing.tag||''):'')+'"></div>';
+    html += '<div class="field"><label>Species</label><select id="aSpecies">' +
+      '<option value="cow"'+((!editing||editing.species!=='buffalo')?' selected':'')+'>Cow</option>' +
+      '<option value="buffalo"'+(editing&&editing.species==='buffalo'?' selected':'')+'>Buffalo</option>' +
+      '</select></div>';
+    html += '<div class="field"><label>Breed (optional)</label><input type="text" id="aBreed" enterkeyhint="next" value="'+(editing?esc(editing.breed||''):'')+'" placeholder="e.g. Gir, Murrah"></div>';
+    html += '<div class="field"><label>Date of birth (optional)</label><input type="date" id="aDob" value="'+(editing?esc(editing.dob||''):'')+'"></div>';
+    var lactVal = (editing && editing.lactationStatus) || 'milking';
+    html += '<div class="field"><label>Lactation status</label><select id="aLactation">' +
+      '<option value="milking"'+(lactVal==='milking'?' selected':'')+'>Milking</option>' +
+      '<option value="dry"'+(lactVal==='dry'?' selected':'')+'>Dry</option>' +
+      '<option value="heifer"'+(lactVal==='heifer'?' selected':'')+'>Heifer (not yet calved)</option>' +
+      '</select></div>';
+    var others = db.cattle.filter(function(c){return !editing || c.id!==editing.id;});
+    html += '<div class="field"><label>Mother (optional)</label><select id="aDam">' +
+      '<option value="">— Not tracked —</option>' +
+      others.map(function(c){ return '<option value="'+c.id+'"'+(editing&&editing.damId===c.id?' selected':'')+'>'+esc(c.name)+(c.tag?' ('+esc(c.tag)+')':'')+'</option>'; }).join('') +
+      '</select></div>';
     html += '<div class="btn-row" style="margin-top:6px;">';
     if(editing) html += '<button class="btn btn-danger" id="aDelete">Delete</button>';
     html += '<button class="btn btn-primary" id="aSave">Save</button></div>';
@@ -1744,16 +1895,186 @@
         var rec = editing || {id:uid()};
         rec.name = name;
         rec.tag = root.querySelector('#aTag').value.trim();
+        rec.species = root.querySelector('#aSpecies').value;
+        rec.breed = root.querySelector('#aBreed').value.trim();
+        rec.dob = root.querySelector('#aDob').value;
+        rec.lactationStatus = root.querySelector('#aLactation').value;
+        rec.damId = root.querySelector('#aDam').value || '';
         if(!editing) db.cattle.push(rec);
-        syncAfterWrite('cattle', [rec]); closeSheet(); toast('Saved'); render();
+        syncAfterWrite('cattle', [rec]); closeSheet(); toast('Saved');
+        if(afterSave) afterSave(rec.id); else render();
       });
-      wireEnterChain(root, ['aName','aTag'], function(){ return ['aName','aTag']; }, 'aSave');
+      wireEnterChain(root, ['aName','aTag','aBreed'], function(){ return ['aName','aTag','aBreed']; }, 'aSave');
       root.querySelector('#aName').focus();
       var delBtn = root.querySelector('#aDelete');
       if(delBtn) delBtn.addEventListener('click', function(){
-        confirmDeleteThen('Delete Animal?', 'This removes the animal. Its existing production entries will stay in your records but show as "Unknown".', function(){
+        confirmDeleteThen('Delete Animal?', 'This removes the animal. Its existing production and health entries will stay in your records but show as "Unknown".', function(){
           db.cattle = db.cattle.filter(function(c){return c.id!==editing.id;});
           syncAfterDelete('cattle', editing.id); toast('Deleted'); render();
+        });
+      });
+    });
+  }
+
+  function openAnimalDetail(id){
+    var c = cattleById(id);
+    if(!c) return;
+    var st = animalStatus(id);
+    var age = computeAge(c.dob);
+    var html = '<h2>'+esc(c.name)+'</h2>';
+    var subBits = [];
+    if(c.tag) subBits.push(esc(c.tag));
+    subBits.push(c.species==='buffalo'?'Buffalo':'Cow');
+    if(c.breed) subBits.push(esc(c.breed));
+    if(age) subBits.push(age);
+    var dam = c.damId ? cattleById(c.damId) : null;
+    if(dam) subBits.push('Calf of '+esc(dam.name));
+    html += '<p style="font-size:12.5px;color:var(--ink-soft);margin:-8px 0 14px;">'+subBits.join(' · ')+'</p>';
+
+    var statusColor = (st.state==='pregnant'||st.state==='fresh') ? 'var(--good)' : ((st.state==='awaiting_check'||st.state==='recheck') ? 'var(--gold)' : 'var(--ink-soft)');
+    var lactLabel = c.lactationStatus==='dry' ? 'Dry' : (c.lactationStatus==='heifer' ? 'Heifer' : 'Milking');
+    html += '<div class="card" style="margin-bottom:14px;">';
+    html += '<div class="mini-stat"><span>Status</span><b class="num" style="color:'+statusColor+';">'+esc(st.label)+'</b></div>';
+    if(st.sub) html += '<div class="mini-stat"><span>Details</span><span style="text-align:right;">'+esc(st.sub)+'</span></div>';
+    html += '<div class="mini-stat"><span>Lactation</span><span>'+lactLabel+'</span></div>';
+    html += '</div>';
+
+    html += '<div class="btn-row" style="margin-bottom:14px;">';
+    html += '<button class="btn btn-ghost" id="aEditProfile">Edit Profile</button>';
+    html += '<button class="btn btn-primary" id="aLogEvent">+ Log Event</button>';
+    html += '</div>';
+
+    var calves = db.cattle.filter(function(x){return x.damId===id;});
+    if(calves.length){
+      html += '<div class="section-title">Calves ('+calves.length+')</div>';
+      html += '<div class="list" style="margin-bottom:14px;">';
+      calves.forEach(function(k){
+        html += '<div class="row" data-open-animal="'+k.id+'"><div class="row-main">' +
+          '<div class="row-title">'+esc(k.name)+'</div><div class="row-sub">'+esc(k.tag||'No tag')+(k.dob?' · '+dateShort(k.dob):'')+'</div></div></div>';
+      });
+      html += '</div>';
+    }
+
+    var events = healthByCattle(id).slice().reverse();
+    html += '<div class="section-title">History</div>';
+    if(!events.length){
+      html += emptyState('No health records yet', 'Log AI, heat, checks, deworming, vaccination and calving here.');
+    } else {
+      html += '<div class="list">';
+      events.forEach(function(e){
+        html += '<div class="row" data-edit-health="'+e.id+'"><div class="row-main">' +
+          '<div class="row-title">'+esc(healthTypeLabel(e))+'</div>' +
+          '<div class="row-sub">'+dateLabel(e.date)+(e.notes?' · '+esc(e.notes):'')+'</div>' +
+          '</div></div>';
+      });
+      html += '</div>';
+    }
+
+    openSheet(html, function(root){
+      root.querySelector('#aEditProfile').addEventListener('click', function(){
+        closeSheet();
+        openCattleForm(id, function(){ openAnimalDetail(id); });
+      });
+      root.querySelector('#aLogEvent').addEventListener('click', function(){
+        closeSheet();
+        openHealthForm(id, null, function(){ openAnimalDetail(id); });
+      });
+      root.querySelectorAll('[data-edit-health]').forEach(function(row){
+        row.addEventListener('click', function(){
+          closeSheet();
+          openHealthForm(id, row.getAttribute('data-edit-health'), function(){ openAnimalDetail(id); });
+        });
+      });
+      root.querySelectorAll('[data-open-animal]').forEach(function(row){
+        row.addEventListener('click', function(){
+          closeSheet();
+          openAnimalDetail(row.getAttribute('data-open-animal'));
+        });
+      });
+    });
+  }
+
+  function healthTypeLabel(e){
+    switch(e.type){
+      case 'ai': return 'Artificial Insemination';
+      case 'heat': return 'Heat Observed';
+      case 'pregnancy_check':
+        return 'Pregnancy Check — ' + (e.result==='pregnant'?'Pregnant':e.result==='not_pregnant'?'Not Pregnant':'Inconclusive');
+      case 'calving': return 'Calving';
+      case 'deworming': return 'Deworming' + (e.nextDue?' (next '+dateShort(e.nextDue)+')':'');
+      case 'vaccination': return 'Vaccination' + (e.vaccine?' — '+esc(e.vaccine):'') + (e.nextDue?' (next '+dateShort(e.nextDue)+')':'');
+      default: return 'Checkup / Note';
+    }
+  }
+
+  var HEALTH_TYPES = [
+    {v:'ai', label:'Artificial Insemination'},
+    {v:'heat', label:'Heat Observed'},
+    {v:'pregnancy_check', label:'Pregnancy Check'},
+    {v:'calving', label:'Calving'},
+    {v:'deworming', label:'Deworming'},
+    {v:'vaccination', label:'Vaccination'},
+    {v:'checkup', label:'Checkup / Note'}
+  ];
+
+  function openHealthForm(cattleId, id, afterSave){
+    var editing = id ? healthById(id) : null;
+    var type = editing ? editing.type : 'ai';
+    var html = '<h2>'+(editing?'Edit':'Log')+' Health Event</h2>';
+    html += '<div class="field"><label>Type</label><select id="hType">' +
+      HEALTH_TYPES.map(function(t){ return '<option value="'+t.v+'"'+(t.v===type?' selected':'')+'>'+t.label+'</option>'; }).join('') +
+      '</select></div>';
+    html += '<div class="field"><label>Date</label><input type="date" id="hDate" value="'+(editing?editing.date:todayISO())+'"></div>';
+    html += '<div id="hResultWrap" class="field" style="display:none;"><label>Result</label><select id="hResult">' +
+      '<option value="pregnant"'+(editing&&editing.result==='pregnant'?' selected':'')+'>Pregnant</option>' +
+      '<option value="not_pregnant"'+(editing&&editing.result==='not_pregnant'?' selected':'')+'>Not Pregnant</option>' +
+      '<option value="inconclusive"'+(editing&&editing.result==='inconclusive'?' selected':'')+'>Inconclusive</option>' +
+      '</select></div>';
+    html += '<div id="hVaccineWrap" class="field" style="display:none;"><label>Vaccine name</label><input type="text" id="hVaccine" value="'+(editing?esc(editing.vaccine||''):'')+'" placeholder="e.g. FMD"></div>';
+    html += '<div id="hNextDueWrap" class="field" style="display:none;"><label>Next due (optional)</label><input type="date" id="hNextDue" value="'+(editing?(editing.nextDue||''):'')+'"></div>';
+    html += '<div class="field"><label>Notes (optional)</label><input type="text" id="hNotes" value="'+(editing?esc(editing.notes||''):'')+'"></div>';
+    html += '<div class="btn-row" style="margin-top:6px;">';
+    if(editing) html += '<button class="btn btn-danger" id="hDelete">Delete</button>';
+    html += '<button class="btn btn-primary" id="hSave">Save</button></div>';
+
+    openSheet(html, function(root){
+      var typeSel = root.querySelector('#hType');
+      function syncFields(){
+        var v = typeSel.value;
+        root.querySelector('#hResultWrap').style.display = v==='pregnancy_check' ? '' : 'none';
+        root.querySelector('#hVaccineWrap').style.display = v==='vaccination' ? '' : 'none';
+        root.querySelector('#hNextDueWrap').style.display = (v==='vaccination'||v==='deworming') ? '' : 'none';
+      }
+      syncFields();
+      typeSel.addEventListener('change', syncFields);
+
+      var saveBtn = root.querySelector('#hSave');
+      guardOnce(saveBtn, function(){
+        var date = root.querySelector('#hDate').value;
+        if(!date){ toast('Pick a date'); saveBtn.disabled = false; return; }
+        var rec = editing || {id:uid(), cattleId:cattleId};
+        rec.type = typeSel.value;
+        rec.date = date;
+        rec.notes = root.querySelector('#hNotes').value.trim();
+        if(rec.type==='pregnancy_check') rec.result = root.querySelector('#hResult').value; else delete rec.result;
+        if(rec.type==='vaccination') rec.vaccine = root.querySelector('#hVaccine').value.trim(); else delete rec.vaccine;
+        if(rec.type==='vaccination'||rec.type==='deworming') rec.nextDue = root.querySelector('#hNextDue').value; else delete rec.nextDue;
+        if(!editing) db.health.push(rec);
+        syncAfterWrite('health', [rec]);
+        if(rec.type==='calving'){
+          var animal = cattleById(cattleId);
+          if(animal){ animal.lactationStatus = 'milking'; syncAfterWrite('cattle', [animal]); }
+        }
+        closeSheet(); toast('Saved');
+        if(afterSave) afterSave(); else render();
+      });
+      root.querySelector('#hDate').focus();
+      var delBtn = root.querySelector('#hDelete');
+      if(delBtn) delBtn.addEventListener('click', function(){
+        confirmDeleteThen('Delete Record?', 'This removes this health record permanently.', function(){
+          db.health = db.health.filter(function(h){return h.id!==editing.id;});
+          syncAfterDelete('health', editing.id); toast('Deleted');
+          if(afterSave) afterSave(); else render();
         });
       });
     });
