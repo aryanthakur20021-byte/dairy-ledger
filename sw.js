@@ -1,4 +1,4 @@
-const CACHE = 'dairy-ledger-v6';
+const CACHE = 'dairy-ledger-v7';
 const ASSETS = ['./index.html', './manifest.json', './icon.svg'];
 
 self.addEventListener('install', (e) => {
