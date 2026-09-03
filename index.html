@@ -134,6 +134,8 @@
   .kpi-card.gold{background:linear-gradient(155deg,var(--gold) 0%, #c98a1f 100%); color:var(--forest-2);}
   .kpi-card.terracotta{background:linear-gradient(155deg,var(--terracotta) 0%, var(--terracotta-dark) 100%); color:var(--paper);}
   .kpi-card.wide{grid-column:1 / -1;}
+  .kpi-clickable{transition:transform .18s var(--ease);}
+  .kpi-clickable:active{transform:scale(.96);}
   .kpi-label{font-size:11.5px; font-weight:700; letter-spacing:.06em; text-transform:uppercase; opacity:.75;}
   .kpi-value{font-family:Georgia,"Iowan Old Style","Palatino Linotype",Palatino,serif; font-size:26px; font-weight:600; margin-top:6px; line-height:1.1;}
   .kpi-sub{font-size:12px; opacity:.7; margin-top:4px;}
@@ -353,6 +355,10 @@
   .hist-row:active{background:var(--cream-2);}
   .hist-row.active span:first-child{color:var(--forest); font-weight:800;}
   .hist-row span:last-child{color:var(--ink-soft); font-weight:700;}
+  .hist-toggle{
+    width:100%; text-align:center; padding:11px 4px 2px; margin-top:4px;
+    font-size:12.5px; font-weight:700; color:var(--terracotta-dark);
+  }
 
   a.link-plain{color:var(--forest); font-weight:700; text-decoration:underline; text-underline-offset:2px;}
 
@@ -776,7 +782,7 @@
   }
 
   /* ================= state ================= */
-  var state = { tab:'home', month: todayISO().slice(0,7) };
+  var state = { tab:'home', month: todayISO().slice(0,7), historyExpanded: false };
 
   function todayISO(){
     var d = new Date();
@@ -1085,14 +1091,15 @@
   }
 
   /* ================= tab switching ================= */
+  function switchTab(tabName){
+    state.tab = tabName;
+    $tabs.forEach(function(b){ b.classList.toggle('active', b.getAttribute('data-tab')===tabName); });
+    $pageTitle.textContent = TAB_TITLES[state.tab];
+    $fab.classList.toggle('hidden', !!FAB_HIDDEN_TABS[state.tab]);
+    render();
+  }
   $tabs.forEach(function(btn){
-    btn.addEventListener('click', function(){
-      state.tab = btn.getAttribute('data-tab');
-      $tabs.forEach(function(b){ b.classList.toggle('active', b===btn); });
-      $pageTitle.textContent = TAB_TITLES[state.tab];
-      $fab.classList.toggle('hidden', !!FAB_HIDDEN_TABS[state.tab]);
-      render();
-    });
+    btn.addEventListener('click', function(){ switchTab(btn.getAttribute('data-tab')); });
   });
 
   $fab.addEventListener('click', function(){
@@ -1259,15 +1266,17 @@
 
     var html = '';
     html += '<div class="kpi-grid">';
-    html += kpiCard('Milk Sold', liters(supQty), money(supAmt)+' billed', '');
-    html += kpiCard('Milk Produced', liters(prodQty), db.cattle.length + ' animals', '');
-    html += kpiCard('Expenses', money(expAmt), 'feed + labour + other', 'terracotta');
-    html += kpiCard('Net (this month)', money(net), 'sales − expenses', 'gold');
+    html += kpiCard('Milk Sold', liters(supQty), money(supAmt)+' billed', '', 'supply');
+    html += kpiCard('Milk Produced', liters(prodQty), db.cattle.length + ' animals', '', 'production');
+    html += kpiCard('Expenses', money(expAmt), 'feed + labour + other', 'terracotta', 'expenses');
+    html += kpiCard('Net (this month)', money(net), 'sales − expenses', 'gold', 'snapshot');
     html += '</div>';
 
     html += '<div class="section-title">Sales History</div>';
     html += '<div class="card"><div class="list" style="gap:0;">';
-    lastNMonths(6).forEach(function(hym){
+    var histAll = lastNMonths(12);
+    var histShown = state.historyExpanded ? histAll : histAll.slice(0,2);
+    histShown.forEach(function(hym){
       var s = monthSupply(hym);
       var amt = s.reduce(function(sum,e){return sum+(Number(e.amount)||0);},0);
       var qty = s.reduce(function(sum,e){return sum+(Number(e.qty)||0);},0);
@@ -1275,6 +1284,7 @@
         '<span>'+monthLabel(hym)+'</span>' +
         '<span class="num">'+(s.length ? liters(qty)+' · '+money(amt) : '—')+'</span></div>';
     });
+    html += '<button type="button" class="hist-toggle" id="histToggle">'+(state.historyExpanded ? 'Show less ▴' : 'Show more months ▾')+'</button>';
     html += '</div></div>';
 
     var reminders = dueReminders();
@@ -1320,7 +1330,7 @@
     }
     html += '</div>';
 
-    html += '<div class="section-title">This Month Snapshot</div>';
+    html += '<div class="section-title" id="snapshotCard">This Month Snapshot</div>';
     html += '<div class="card">';
     html += '<div class="mini-stat"><span>Cash collected</span><b class="num">'+money(collected)+'</b></div>';
     html += '<div class="mini-stat"><span>Feed cost</span><b class="num">'+money(sumByCat(exp,'feed'))+'</b></div>';
@@ -1331,6 +1341,17 @@
 
     $view.innerHTML = html;
 
+    $view.querySelectorAll('[data-kpi-nav]').forEach(function(card){
+      card.addEventListener('click', function(){
+        var target = card.getAttribute('data-kpi-nav');
+        if(target === 'snapshot'){
+          var snap = $view.querySelector('#snapshotCard');
+          if(snap) snap.scrollIntoView({behavior:'smooth', block:'start'});
+        } else {
+          switchTab(target);
+        }
+      });
+    });
     $view.querySelectorAll('[data-settle]').forEach(function(btn){
       btn.addEventListener('click', function(){ openSettleForm(btn.getAttribute('data-settle')); });
     });
@@ -1352,6 +1373,11 @@
         render();
       });
     });
+    var histToggle = $view.querySelector('#histToggle');
+    if(histToggle) histToggle.addEventListener('click', function(){
+      state.historyExpanded = !state.historyExpanded;
+      render();
+    });
   }
   function sumByCat(list, cat){
     return list.filter(function(e){return e.category===cat;}).reduce(function(s,e){return s+(Number(e.amount)||0);},0);
@@ -1364,8 +1390,10 @@
     for(var k in days){ total += days[k]; n++; }
     return n ? total/n : 0;
   }
-  function kpiCard(label, value, sub, variant){
-    return '<div class="kpi-card '+(variant||'')+'"><div class="kpi-label">'+esc(label)+'</div>' +
+  function kpiCard(label, value, sub, variant, navTarget){
+    var navAttr = navTarget ? ' data-kpi-nav="'+navTarget+'"' : '';
+    var navCls = navTarget ? ' kpi-clickable' : '';
+    return '<div class="kpi-card '+(variant||'')+navCls+'"'+navAttr+'><div class="kpi-label">'+esc(label)+'</div>' +
       '<div class="kpi-value num">'+value+'</div>' +
       '<div class="kpi-sub">'+esc(sub)+'</div></div>';
   }
