@@ -350,6 +350,12 @@
   .mini-stat:last-child{border-bottom:none;}
   .mini-stat b{font-weight:800;}
 
+  .prod-stat{padding:9px 0; border-bottom:1px solid var(--line);}
+  .prod-stat:last-child{border-bottom:none;}
+  .prod-stat-top{display:flex; justify-content:space-between; font-size:13.5px;}
+  .prod-stat-top b{font-weight:800;}
+  .prod-stat-sub{font-size:11px; color:var(--ink-faint); margin-top:3px;}
+
   .hist-row{display:flex; justify-content:space-between; align-items:center; padding:11px 4px; border-bottom:1px solid var(--line); font-size:13.5px; transition:background .15s var(--ease);}
   .hist-row:last-child{border-bottom:none;}
   .hist-row:active{background:var(--cream-2);}
@@ -949,7 +955,12 @@
   }
 
   function supplyDue(entry){ return Math.max(0, (Number(entry.amount)||0) - (Number(entry.paidAmt)||0)); }
-  function shiftLabel(shift){ return shift==='evening' ? '🌙 Evening' : (shift==='morning' ? '🌅 Morning' : ''); }
+  function supplySplit(e){
+    if(!e) return { m:0, ev:0 };
+    if(e.morningQty!=null || e.eveningQty!=null) return { m:Number(e.morningQty)||0, ev:Number(e.eveningQty)||0 };
+    if(e.shift==='evening') return { m:0, ev:Number(e.qty)||0 };
+    return { m:Number(e.qty)||0, ev:0 };
+  }
   function reminderHealthType(kind){
     switch(kind){
       case 'check': case 'recheck': return 'pregnancy_check';
@@ -1445,9 +1456,11 @@
         if(e.date !== lastDate){ html += '<div class="date-heading">'+dateLabel(e.date)+'</div>'; lastDate = e.date; }
         var c = clientById(e.clientId);
         var status = e.paid ? 'paid' : (Number(e.paidAmt)>0 ? 'partial' : 'unpaid');
+        var sp = supplySplit(e);
+        var breakdown = (sp.m>0 && sp.ev>0) ? ('🌅 '+liters(sp.m)+' + 🌙 '+liters(sp.ev)) : (sp.ev>0 ? '🌙 '+liters(sp.ev) : '🌅 '+liters(sp.m));
         html += '<div class="row" data-edit-supply="'+e.id+'">' +
           '<div class="row-main"><div class="row-title">'+esc(c?c.name:'Unknown')+'</div>' +
-          '<div class="row-sub">'+liters(e.qty)+' × '+money(e.rate)+'/L'+(e.shift?' · '+shiftLabel(e.shift):'')+'</div></div>' +
+          '<div class="row-sub">'+breakdown+' × '+money(e.rate)+'/L</div></div>' +
           '<div class="row-end"><div class="row-amt num">'+money(e.amount)+'</div>' +
           '<span class="badge '+status+'">'+status+'</span></div></div>';
       });
@@ -1495,11 +1508,10 @@
       return '<option value="'+c.id+'"'+((editing?editing.clientId:defaultClient.id)===c.id?' selected':'')+'>'+esc(c.name)+'</option>';
     }).join('');
     var d = editing ? editing.date : (prefill && prefill.date ? prefill.date : todayISO());
-    var qty = editing ? editing.qty : '';
+    var split = editing ? supplySplit(editing) : { m:'', ev:'' };
     var rate = editing ? editing.rate : (defaultClient ? defaultClient.rate : '');
     var status = editing ? (editing.paid ? 'paid' : (Number(editing.paidAmt)>0 ? 'partial' : 'unpaid')) : 'paid';
     var paidAmt = editing ? editing.paidAmt : '';
-    var shift = editing ? (editing.shift || 'morning') : (new Date().getHours() < 14 ? 'morning' : 'evening');
 
     var html = '<h2>'+(editing?'Edit':'Log')+' Milk Supply</h2>';
     if(!editing){
@@ -1510,16 +1522,14 @@
     }
     html += '<div class="field" id="fDateSingleWrap"><label>Date</label><input type="date" id="fDate" value="'+d+'"></div>';
     html += '<div class="field" id="fDateMultiWrap" style="display:none;"><label>Dates</label><div class="mini-cal" id="fCal"></div>' +
-      '<div class="hint">Tap days to add or remove them. Same client, quantity, rate and status will be logged for every date picked.</div></div>';
+      '<div class="hint">Tap days to add or remove them. Same client, quantities, rate and status will be logged for every date picked.</div></div>';
     html += '<div class="field"><label>Client</label><select id="fClient">'+clientOptions+'</select></div>';
-    html += '<div class="field"><label>Shift</label><div class="segmented" id="fShift">' +
-      '<button type="button" data-v="morning" class="'+(shift==='morning'?'active':'')+'">🌅 Morning</button>' +
-      '<button type="button" data-v="evening" class="'+(shift==='evening'?'active':'')+'">🌙 Evening</button>' +
-      '</div></div>';
     html += '<div class="field-row">' +
-      '<div class="field"><label>Quantity (L)</label><input type="number" id="fQty" inputmode="decimal" step="0.1" enterkeyhint="next" value="'+qty+'"></div>' +
-      '<div class="field"><label>Rate (₹/L)</label><input type="number" id="fRate" inputmode="decimal" step="0.5" enterkeyhint="done" value="'+rate+'"></div>' +
+      '<div class="field"><label>🌅 Morning (L)</label><input type="number" id="fMorn" inputmode="decimal" step="0.1" enterkeyhint="next" value="'+split.m+'"></div>' +
+      '<div class="field"><label>🌙 Evening (L)</label><input type="number" id="fEve" inputmode="decimal" step="0.1" enterkeyhint="next" value="'+split.ev+'"></div>' +
       '</div>';
+    html += '<div class="hint" style="margin:-6px 0 12px;">Leave one blank if you\'re only logging that shift right now — come back to this same entry later to fill in the other.</div>';
+    html += '<div class="field"><label>Rate (₹/L)</label><input type="number" id="fRate" inputmode="decimal" step="0.5" enterkeyhint="next" value="'+rate+'"></div>';
     html += '<div class="field"><label>Amount</label><input type="number" id="fAmount" inputmode="decimal" step="0.01" readonly style="opacity:.8"></div>';
     html += '<div class="field"><label>Payment status</label><div class="segmented" id="fStatus">' +
       '<button type="button" data-v="paid" class="'+(status==='paid'?'active':'')+'">Paid</button>' +
@@ -1533,17 +1543,10 @@
     html += '</div>';
 
     openSheet(html, function(root){
-      var qtyEl = root.querySelector('#fQty'), rateEl = root.querySelector('#fRate'), amtEl = root.querySelector('#fAmount');
+      var mornEl = root.querySelector('#fMorn'), eveEl = root.querySelector('#fEve');
+      var rateEl = root.querySelector('#fRate'), amtEl = root.querySelector('#fAmount');
       var statusWrap = root.querySelector('#fStatus'), paidWrap = root.querySelector('#fPaidAmtWrap'), paidEl = root.querySelector('#fPaidAmt');
       var curStatus = status;
-      var curShift = shift;
-      var shiftWrap = root.querySelector('#fShift');
-      shiftWrap.querySelectorAll('button').forEach(function(b){
-        b.addEventListener('click', function(){
-          shiftWrap.querySelectorAll('button').forEach(function(x){x.classList.remove('active');});
-          b.classList.add('active'); curShift = b.getAttribute('data-v');
-        });
-      });
       var dateMode = 'single';
       var calYm = state.month;
       var selectedDates = new Set();
@@ -1611,7 +1614,8 @@
       }
 
       function recalcAmount(){
-        var amt = (parseFloat(qtyEl.value)||0) * (parseFloat(rateEl.value)||0);
+        var qtyTotal = (parseFloat(mornEl.value)||0) + (parseFloat(eveEl.value)||0);
+        var amt = qtyTotal * (parseFloat(rateEl.value)||0);
         amtEl.value = Math.round(amt*100)/100;
         syncPaidWithStatus();
       }
@@ -1621,7 +1625,8 @@
         if(curStatus==='paid') paidEl.value = amt;
         if(curStatus==='unpaid') paidEl.value = 0;
       }
-      qtyEl.addEventListener('input', recalcAmount);
+      mornEl.addEventListener('input', recalcAmount);
+      eveEl.addEventListener('input', recalcAmount);
       rateEl.addEventListener('input', recalcAmount);
       root.querySelector('#fClient').addEventListener('change', function(e){
         if(!editing){ var c = clientById(e.target.value); if(c) rateEl.value = c.rate; recalcAmount(); }
@@ -1637,8 +1642,10 @@
 
       var saveBtn = root.querySelector('#fSave');
       guardOnce(saveBtn, function(){
-        var qtyV = parseFloat(qtyEl.value);
-        if(!qtyV || qtyV <= 0){ toast('Enter a valid quantity'); saveBtn.disabled = false; return; }
+        var mornV = parseFloat(mornEl.value)||0;
+        var eveV = parseFloat(eveEl.value)||0;
+        var qtyV = mornV + eveV;
+        if(!qtyV || qtyV <= 0){ toast('Enter a morning or evening quantity'); saveBtn.disabled = false; return; }
         var rateV = parseFloat(rateEl.value)||0;
         var amount = Math.round(qtyV*rateV*100)/100;
         var pAmt = curStatus==='paid' ? amount : (curStatus==='unpaid' ? 0 : (parseFloat(paidEl.value)||0));
@@ -1650,7 +1657,8 @@
           var dates = Array.from(selectedDates);
           var newRecs = dates.map(function(iso){
             return {
-              id: uid(), date: iso, clientId: clientIdV, shift: curShift,
+              id: uid(), date: iso, clientId: clientIdV,
+              morningQty: mornV, eveningQty: eveV,
               qty: qtyV, rate: rateV, amount: amount,
               paidAmt: pAmtFinal, paid: pAmtFinal >= amount - 0.004
             };
@@ -1664,7 +1672,8 @@
         var rec = editing || {id:uid()};
         rec.date = root.querySelector('#fDate').value || todayISO();
         rec.clientId = clientIdV;
-        rec.shift = curShift;
+        rec.morningQty = mornV; rec.eveningQty = eveV;
+        delete rec.shift;
         rec.qty = qtyV; rec.rate = rateV; rec.amount = amount;
         rec.paidAmt = pAmtFinal;
         rec.paid = rec.paidAmt >= amount - 0.004;
@@ -1672,8 +1681,8 @@
         syncAfterWrite('supply', [rec]); closeSheet(); toast('Saved'); render();
       });
 
-      wireEnterChain(root, ['fQty','fRate','fPaidAmt'], function(){
-        var order = ['fQty','fRate'];
+      wireEnterChain(root, ['fMorn','fEve','fRate','fPaidAmt'], function(){
+        var order = ['fMorn','fEve','fRate'];
         if(paidWrap.style.display !== 'none') order.push('fPaidAmt');
         return order;
       }, 'fSave');
@@ -1703,10 +1712,18 @@
     html += '<div class="section-title">Per Animal — '+esc(monthLabel(ym))+'</div><div class="card"><div class="list" style="gap:0;">';
     db.cattle.forEach(function(c){
       var mine = entries.filter(function(e){return e.cattleId===c.id;});
-      var total = mine.reduce(function(s,e){return s+(Number(e.morning)||0)+(Number(e.evening)||0);},0);
-      var avg = mine.length ? total/mine.length : 0;
-      html += '<div class="mini-stat"><span>'+esc(c.name)+(c.tag?' <span style="color:var(--ink-faint)">('+esc(c.tag)+')</span>':'')+'</span>' +
-        '<b class="num">'+liters(total)+' <span style="font-weight:600;color:var(--ink-faint);font-size:11.5px;">avg '+liters(avg)+'/day</span></b></div>';
+      var totalM = mine.reduce(function(s,e){return s+(Number(e.morning)||0);},0);
+      var totalE = mine.reduce(function(s,e){return s+(Number(e.evening)||0);},0);
+      var total = totalM + totalE;
+      var days = mine.length;
+      var avg = days ? total/days : 0;
+      var avgM = days ? totalM/days : 0;
+      var avgE = days ? totalE/days : 0;
+      html += '<div class="prod-stat">' +
+        '<div class="prod-stat-top"><span>'+esc(c.name)+(c.tag?' <span style="color:var(--ink-faint)">('+esc(c.tag)+')</span>':'')+'</span>' +
+        '<b class="num">'+liters(total)+' <span style="font-weight:600;color:var(--ink-faint);font-size:11.5px;">avg '+liters(avg)+'/day</span></b></div>' +
+        (days ? '<div class="prod-stat-sub">🌅 avg '+liters(avgM)+'/day &middot; 🌙 avg '+liters(avgE)+'/day</div>' : '') +
+        '</div>';
     });
     html += '</div></div>';
 
@@ -2039,8 +2056,10 @@
         } else {
           entries.forEach(function(e){
             var status = e.paid ? 'paid' : (Number(e.paidAmt)>0 ? 'partial' : 'unpaid');
+            var sp = supplySplit(e);
+            var tag = (sp.m>0 && sp.ev>0) ? ('🌅 '+liters(sp.m)+' + 🌙 '+liters(sp.ev)) : (sp.ev>0 ? '🌙 Evening' : '🌅 Morning');
             h += '<div class="cal-day-entry-row" data-day-entry="'+e.id+'">' +
-              '<div><div class="cal-shift-tag">'+(e.shift?shiftLabel(e.shift):'Delivery')+'</div>' +
+              '<div><div class="cal-shift-tag">'+tag+'</div>' +
               '<div style="font-size:13px;color:var(--ink-soft);">'+liters(e.qty)+' × '+money(e.rate)+'/L</div></div>' +
               '<div style="text-align:right;"><div class="row-amt num">'+money(e.amount)+'</div>' +
               '<span class="badge '+status+'">'+status+'</span></div></div>';
@@ -2070,16 +2089,14 @@
         for(var dnum=1; dnum<=daysInMonth; dnum++){
           var iso = isoOf(y,m,dnum);
           var entries = entriesFor(iso);
-          var hasMorning = entries.some(function(e){return e.shift==='morning';});
-          var hasEvening = entries.some(function(e){return e.shift==='evening';});
-          var hasOther = entries.some(function(e){return !e.shift;});
+          var hasMorning = entries.some(function(e){return supplySplit(e).m>0;});
+          var hasEvening = entries.some(function(e){return supplySplit(e).ev>0;});
           var cls = 'cal-day' + (selectedDay===iso?' selected':'') + (iso===todayIso?' today':'');
           var dots = '';
-          if(hasMorning || hasEvening || hasOther){
+          if(hasMorning || hasEvening){
             dots = '<div class="cal-dots">';
             if(hasMorning) dots += '<span class="cal-dot morning"></span>';
             if(hasEvening) dots += '<span class="cal-dot evening"></span>';
-            if(hasOther && !hasMorning && !hasEvening) dots += '<span class="cal-dot morning"></span>';
             dots += '</div>';
           }
           h += '<div class="'+cls+'" data-date="'+iso+'">'+dnum+dots+'</div>';
@@ -2423,7 +2440,8 @@
     var rows = entries.map(function(e){
       totalBilled += Number(e.amount)||0;
       totalPaid += Number(e.paidAmt)||0;
-      return '<tr><td>'+dateShort(e.date)+'</td><td>'+(e.shift?shiftLabel(e.shift):'—')+'</td><td class="num">'+liters(e.qty)+'</td><td class="num">'+money(e.rate)+'</td>' +
+      var sp = supplySplit(e);
+      return '<tr><td>'+dateShort(e.date)+'</td><td class="num">'+(sp.m>0?liters(sp.m):'—')+'</td><td class="num">'+(sp.ev>0?liters(sp.ev):'—')+'</td><td class="num">'+money(e.rate)+'</td>' +
         '<td class="num">'+money(e.amount)+'</td><td class="num">'+money(e.paidAmt)+'</td><td class="num">'+money(supplyDue(e))+'</td></tr>';
     }).join('');
     var due = Math.round((totalBilled-totalPaid)*100)/100;
@@ -2433,7 +2451,7 @@
     if(!entries.length){
       html += '<p style="font-size:13px;color:#555;">No supply entries in this date range.</p>';
     } else {
-      html += '<table><thead><tr><th>Date</th><th>Shift</th><th class="num">Qty</th><th class="num">Rate</th><th class="num">Amount</th><th class="num">Paid</th><th class="num">Due</th></tr></thead><tbody>'+rows+'</tbody></table>';
+      html += '<table><thead><tr><th>Date</th><th class="num">Morning</th><th class="num">Evening</th><th class="num">Rate</th><th class="num">Amount</th><th class="num">Paid</th><th class="num">Due</th></tr></thead><tbody>'+rows+'</tbody></table>';
     }
     html += '<div class="stmt-totals">' +
       '<div><span>Total billed</span><b class="num">'+money(totalBilled)+'</b></div>' +
