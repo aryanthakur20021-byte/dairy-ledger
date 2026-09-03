@@ -157,6 +157,12 @@
   .row-sub{font-size:12.5px; color:var(--ink-soft);}
   .row-end{display:flex; flex-direction:column; align-items:flex-end; gap:3px; flex-shrink:0;}
   .row-amt{font-weight:800; font-size:15px; color:var(--ink);}
+  .row-sub2{font-size:11.5px; color:var(--ink-soft); margin-top:2px;}
+  .cal-chip-btn{
+    font-size:11.5px; font-weight:700; color:var(--forest); background:var(--gold-light);
+    padding:6px 10px; border-radius:100px; flex-shrink:0; white-space:nowrap;
+  }
+  .cal-chip-btn:active{transform:scale(.95);}
   .badge{
     font-size:10.5px; font-weight:700; letter-spacing:.03em; padding:3px 8px; border-radius:100px;
     text-transform:uppercase;
@@ -295,6 +301,20 @@
   .mini-cal-foot{display:flex; align-items:center; justify-content:space-between; margin-top:10px; font-size:12px; color:var(--ink-soft);}
   .mini-cal-foot button{font-weight:700; color:var(--terracotta-dark);}
 
+  .cal-day{position:relative;}
+  .cal-day .cal-dots{position:absolute; bottom:3px; left:0; right:0; display:flex; justify-content:center; gap:3px;}
+  .cal-day .cal-dot{width:5px; height:5px; border-radius:50%;}
+  .cal-day .cal-dot.morning{background:var(--gold);}
+  .cal-day .cal-dot.evening{background:var(--forest-3);}
+  .cal-day.selected .cal-dot{background:var(--cream);}
+  .cal-day-entry-row{
+    display:flex; align-items:center; justify-content:space-between; gap:10px;
+    padding:11px 4px; border-bottom:1px solid var(--line);
+  }
+  .cal-day-entry-row:last-child{border-bottom:none;}
+  .cal-day-entry-row:active{background:var(--cream-2);}
+  .cal-shift-tag{font-size:11px; font-weight:700; color:var(--ink-soft);}
+
   .banner{
     display:flex; gap:10px; align-items:flex-start;
     background:rgba(220,159,44,.14); border:1px solid rgba(220,159,44,.35);
@@ -327,6 +347,12 @@
   .mini-stat{display:flex; justify-content:space-between; padding:9px 0; border-bottom:1px solid var(--line); font-size:13.5px;}
   .mini-stat:last-child{border-bottom:none;}
   .mini-stat b{font-weight:800;}
+
+  .hist-row{display:flex; justify-content:space-between; align-items:center; padding:11px 4px; border-bottom:1px solid var(--line); font-size:13.5px; transition:background .15s var(--ease);}
+  .hist-row:last-child{border-bottom:none;}
+  .hist-row:active{background:var(--cream-2);}
+  .hist-row.active span:first-child{color:var(--forest); font-weight:800;}
+  .hist-row span:last-child{color:var(--ink-soft); font-weight:700;}
 
   a.link-plain{color:var(--forest); font-weight:700; text-decoration:underline; text-underline-offset:2px;}
 
@@ -908,6 +934,17 @@
   }
 
   function supplyDue(entry){ return Math.max(0, (Number(entry.amount)||0) - (Number(entry.paidAmt)||0)); }
+  function shiftLabel(shift){ return shift==='evening' ? '🌙 Evening' : (shift==='morning' ? '🌅 Morning' : ''); }
+  function reminderHealthType(kind){
+    switch(kind){
+      case 'check': case 'recheck': return 'pregnancy_check';
+      case 'calving': return 'calving';
+      case 'heat': return 'heat';
+      case 'vaccination': return 'vaccination';
+      case 'deworming': return 'deworming';
+      default: return 'checkup';
+    }
+  }
 
   function clientDues(){
     var map = {};
@@ -927,6 +964,15 @@
   }
 
   function monthSupply(ym){ return db.supply.filter(function(e){return inMonth(e.date, ym);}); }
+  function lastNMonths(n){
+    var out = [], d = new Date();
+    for(var i=0;i<n;i++){
+      var y = d.getFullYear(), m = d.getMonth()-i;
+      while(m<0){ m+=12; y--; }
+      out.push(y+'-'+(m+1<10?'0'+(m+1):(m+1)));
+    }
+    return out;
+  }
   function monthProduction(ym){ return db.production.filter(function(e){return inMonth(e.date, ym);}); }
   function monthExpenses(ym){ return db.expenses.filter(function(e){return inMonth(e.date, ym);}); }
 
@@ -1219,17 +1265,30 @@
     html += kpiCard('Net (this month)', money(net), 'sales − expenses', 'gold');
     html += '</div>';
 
+    html += '<div class="section-title">Sales History</div>';
+    html += '<div class="card"><div class="list" style="gap:0;">';
+    lastNMonths(6).forEach(function(hym){
+      var s = monthSupply(hym);
+      var amt = s.reduce(function(sum,e){return sum+(Number(e.amount)||0);},0);
+      var qty = s.reduce(function(sum,e){return sum+(Number(e.qty)||0);},0);
+      html += '<div class="hist-row'+(hym===ym?' active':'')+'" data-hist-month="'+hym+'">' +
+        '<span>'+monthLabel(hym)+'</span>' +
+        '<span class="num">'+(s.length ? liters(qty)+' · '+money(amt) : '—')+'</span></div>';
+    });
+    html += '</div></div>';
+
     var reminders = dueReminders();
     if(reminders.length){
       html += '<div class="section-title">Reminders</div>';
       html += '<div class="card">';
       reminders.slice(0,5).forEach(function(r){
         var overdue = r.daysUntil <= 0;
-        html += '<div class="due-row"><div style="display:flex;align-items:center;gap:10px;min-width:0;">' +
+        html += '<div class="due-row">' +
+          '<div class="reminder-view" data-reminder-cattle="'+r.cattleId+'" style="display:flex;align-items:center;gap:10px;min-width:0;">' +
           '<div class="avatar">'+esc(initials(r.name))+'</div>' +
           '<div style="min-width:0;"><div class="due-name" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+esc(r.name)+'</div>' +
           '<div style="font-size:11.5px;color:'+(overdue?'var(--bad)':'var(--ink-soft)')+';">'+esc(r.label)+'</div></div></div>' +
-          '<button class="settle-btn" data-reminder-cattle="'+r.cattleId+'">View</button>' +
+          '<button class="settle-btn" data-reminder-done="'+r.cattleId+'" data-reminder-kind="'+r.kind+'">Done</button>' +
           '</div>';
       });
       if(reminders.length > 5){
@@ -1275,8 +1334,23 @@
     $view.querySelectorAll('[data-settle]').forEach(function(btn){
       btn.addEventListener('click', function(){ openSettleForm(btn.getAttribute('data-settle')); });
     });
-    $view.querySelectorAll('[data-reminder-cattle]').forEach(function(btn){
-      btn.addEventListener('click', function(){ openAnimalDetail(btn.getAttribute('data-reminder-cattle')); });
+    $view.querySelectorAll('.reminder-view[data-reminder-cattle]').forEach(function(el){
+      el.addEventListener('click', function(){ openAnimalDetail(el.getAttribute('data-reminder-cattle')); });
+    });
+    $view.querySelectorAll('[data-reminder-done]').forEach(function(btn){
+      btn.addEventListener('click', function(ev){
+        ev.stopPropagation();
+        var cattleId = btn.getAttribute('data-reminder-done');
+        var presetType = reminderHealthType(btn.getAttribute('data-reminder-kind'));
+        openHealthForm(cattleId, null, function(){ render(); }, presetType);
+      });
+    });
+    $view.querySelectorAll('[data-hist-month]').forEach(function(row){
+      row.addEventListener('click', function(){
+        state.month = row.getAttribute('data-hist-month');
+        $monthLabel.textContent = monthLabel(state.month);
+        render();
+      });
     });
   }
   function sumByCat(list, cat){
@@ -1336,7 +1410,7 @@
         var status = e.paid ? 'paid' : (Number(e.paidAmt)>0 ? 'partial' : 'unpaid');
         html += '<div class="row" data-edit-supply="'+e.id+'">' +
           '<div class="row-main"><div class="row-title">'+esc(c?c.name:'Unknown')+'</div>' +
-          '<div class="row-sub">'+liters(e.qty)+' × '+money(e.rate)+'/L</div></div>' +
+          '<div class="row-sub">'+liters(e.qty)+' × '+money(e.rate)+'/L'+(e.shift?' · '+shiftLabel(e.shift):'')+'</div></div>' +
           '<div class="row-end"><div class="row-amt num">'+money(e.amount)+'</div>' +
           '<span class="badge '+status+'">'+status+'</span></div></div>';
       });
@@ -1375,17 +1449,20 @@
     );
   }
 
-  function openSupplyForm(entryId){
+  function openSupplyForm(entryId, prefill){
     var editing = entryId ? db.supply.find(function(e){return e.id===entryId;}) : null;
     if(!db.clients.length){ toast('Add a client first (More tab)'); return; }
+    var prefillClient = prefill && prefill.clientId ? clientById(prefill.clientId) : null;
+    var defaultClient = prefillClient || db.clients[0];
     var clientOptions = db.clients.map(function(c){
-      return '<option value="'+c.id+'"'+((editing?editing.clientId:db.clients[0].id)===c.id?' selected':'')+'>'+esc(c.name)+'</option>';
+      return '<option value="'+c.id+'"'+((editing?editing.clientId:defaultClient.id)===c.id?' selected':'')+'>'+esc(c.name)+'</option>';
     }).join('');
-    var d = editing ? editing.date : todayISO();
+    var d = editing ? editing.date : (prefill && prefill.date ? prefill.date : todayISO());
     var qty = editing ? editing.qty : '';
-    var rate = editing ? editing.rate : (db.clients[0] ? db.clients[0].rate : '');
+    var rate = editing ? editing.rate : (defaultClient ? defaultClient.rate : '');
     var status = editing ? (editing.paid ? 'paid' : (Number(editing.paidAmt)>0 ? 'partial' : 'unpaid')) : 'paid';
     var paidAmt = editing ? editing.paidAmt : '';
+    var shift = editing ? (editing.shift || 'morning') : (new Date().getHours() < 14 ? 'morning' : 'evening');
 
     var html = '<h2>'+(editing?'Edit':'Log')+' Milk Supply</h2>';
     if(!editing){
@@ -1398,6 +1475,10 @@
     html += '<div class="field" id="fDateMultiWrap" style="display:none;"><label>Dates</label><div class="mini-cal" id="fCal"></div>' +
       '<div class="hint">Tap days to add or remove them. Same client, quantity, rate and status will be logged for every date picked.</div></div>';
     html += '<div class="field"><label>Client</label><select id="fClient">'+clientOptions+'</select></div>';
+    html += '<div class="field"><label>Shift</label><div class="segmented" id="fShift">' +
+      '<button type="button" data-v="morning" class="'+(shift==='morning'?'active':'')+'">🌅 Morning</button>' +
+      '<button type="button" data-v="evening" class="'+(shift==='evening'?'active':'')+'">🌙 Evening</button>' +
+      '</div></div>';
     html += '<div class="field-row">' +
       '<div class="field"><label>Quantity (L)</label><input type="number" id="fQty" inputmode="decimal" step="0.1" enterkeyhint="next" value="'+qty+'"></div>' +
       '<div class="field"><label>Rate (₹/L)</label><input type="number" id="fRate" inputmode="decimal" step="0.5" enterkeyhint="done" value="'+rate+'"></div>' +
@@ -1418,6 +1499,14 @@
       var qtyEl = root.querySelector('#fQty'), rateEl = root.querySelector('#fRate'), amtEl = root.querySelector('#fAmount');
       var statusWrap = root.querySelector('#fStatus'), paidWrap = root.querySelector('#fPaidAmtWrap'), paidEl = root.querySelector('#fPaidAmt');
       var curStatus = status;
+      var curShift = shift;
+      var shiftWrap = root.querySelector('#fShift');
+      shiftWrap.querySelectorAll('button').forEach(function(b){
+        b.addEventListener('click', function(){
+          shiftWrap.querySelectorAll('button').forEach(function(x){x.classList.remove('active');});
+          b.classList.add('active'); curShift = b.getAttribute('data-v');
+        });
+      });
       var dateMode = 'single';
       var calYm = state.month;
       var selectedDates = new Set();
@@ -1524,7 +1613,7 @@
           var dates = Array.from(selectedDates);
           var newRecs = dates.map(function(iso){
             return {
-              id: uid(), date: iso, clientId: clientIdV,
+              id: uid(), date: iso, clientId: clientIdV, shift: curShift,
               qty: qtyV, rate: rateV, amount: amount,
               paidAmt: pAmtFinal, paid: pAmtFinal >= amount - 0.004
             };
@@ -1538,6 +1627,7 @@
         var rec = editing || {id:uid()};
         rec.date = root.querySelector('#fDate').value || todayISO();
         rec.clientId = clientIdV;
+        rec.shift = curShift;
         rec.qty = qtyV; rec.rate = rateV; rec.amount = amount;
         rec.paidAmt = pAmtFinal;
         rec.paid = rec.paidAmt >= amount - 0.004;
@@ -1744,10 +1834,23 @@
 
     html += '<div class="section-title">Clients ('+db.clients.length+')</div>';
     html += '<div class="list">';
+    var dueMap = {};
+    clientDues().forEach(function(d){ dueMap[d.clientId] = d.due; });
     db.clients.forEach(function(c){
-      html += '<div class="row" data-edit-client="'+c.id+'"><div class="row-main">' +
-        '<div class="row-title">'+esc(c.name)+'</div><div class="row-sub">'+esc(c.phone||'No phone')+'</div></div>' +
-        '<div class="row-end"><div class="row-amt num">'+money(c.rate)+'/L</div></div></div>';
+      var monthEntries = db.supply.filter(function(e){ return e.clientId===c.id && inMonth(e.date, state.month); });
+      var qty = monthEntries.reduce(function(s,e){return s+(Number(e.qty)||0);},0);
+      var due = dueMap[c.id] || 0;
+      html += '<div class="row client-card" data-edit-client="'+c.id+'">' +
+        '<div style="display:flex;align-items:center;gap:10px;min-width:0;">' +
+        '<div class="avatar">'+esc(initials(c.name))+'</div>' +
+        '<div class="row-main">' +
+        '<div class="row-title">'+esc(c.name)+'</div>' +
+        '<div class="row-sub">'+esc(c.phone||'No phone')+' · '+money(c.rate)+'/L</div>' +
+        '<div class="row-sub2">'+(qty>0 ? liters(qty)+' this month' : 'No entries this month')+
+          (due>0.004 ? ' · <span style="color:var(--bad);font-weight:700;">'+money(due)+' due</span>' : '')+'</div>' +
+        '</div></div>' +
+        '<div class="row-end"><button type="button" class="cal-chip-btn" data-client-cal="'+c.id+'">📅 Calendar</button></div>' +
+        '</div>';
     });
     html += '<button class="row" id="addClient" style="justify-content:center;border-style:dashed;color:var(--forest);font-weight:700;">+ Add Client</button>';
     html += '</div>';
@@ -1796,6 +1899,9 @@
     $view.querySelector('#addCattle').addEventListener('click', function(){ openCattleForm(); });
     $view.querySelectorAll('[data-edit-client]').forEach(function(row){
       row.addEventListener('click', function(){ openClientForm(row.getAttribute('data-edit-client')); });
+    });
+    $view.querySelectorAll('[data-client-cal]').forEach(function(btn){
+      btn.addEventListener('click', function(ev){ ev.stopPropagation(); openClientCalendar(btn.getAttribute('data-client-cal')); });
     });
     $view.querySelectorAll('[data-edit-cattle]').forEach(function(row){
       row.addEventListener('click', function(){ openAnimalDetail(row.getAttribute('data-edit-cattle')); });
@@ -1857,6 +1963,117 @@
           db.clients = db.clients.filter(function(c){return c.id!==editing.id;});
           syncAfterDelete('clients', editing.id); toast('Deleted'); render();
         });
+      });
+    });
+  }
+
+  function openClientCalendar(clientId){
+    var c = clientById(clientId);
+    if(!c) return;
+    var calYm = state.month;
+    var selectedDay = null;
+
+    var html = '<h2>'+esc(c.name)+' — Calendar</h2>' +
+      '<div class="mini-cal" id="ccCal"></div>' +
+      '<div class="section-title" style="margin-top:18px;">Day Details</div>' +
+      '<div class="card" id="ccDayCard"></div>' +
+      '<button class="btn btn-primary" id="ccAdd" style="margin-top:14px;">+ Log Supply</button>';
+
+    openSheet(html, function(root){
+      var calEl = root.querySelector('#ccCal');
+      var dayCard = root.querySelector('#ccDayCard');
+      var addBtn = root.querySelector('#ccAdd');
+
+      function pad2(n){ return n<10 ? '0'+n : ''+n; }
+      function isoOf(y,m,day){ return y+'-'+pad2(m+1)+'-'+pad2(day); }
+      function entriesFor(iso){
+        return db.supply.filter(function(e){ return e.clientId===c.id && e.date===iso; });
+      }
+
+      function renderDay(){
+        if(!selectedDay){
+          dayCard.innerHTML = '<p style="font-size:12.5px;color:var(--ink-soft);text-align:center;padding:6px 0;">Tap a day on the calendar to see deliveries.</p>';
+          return;
+        }
+        var entries = entriesFor(selectedDay);
+        var h = '<div class="mini-stat" style="border-bottom:none;padding-top:0;"><span style="font-weight:700;color:var(--ink);">'+dateLabel(selectedDay)+'</span></div>';
+        if(!entries.length){
+          h += '<p style="font-size:12.5px;color:var(--ink-soft);">No delivery logged this day.</p>';
+        } else {
+          entries.forEach(function(e){
+            var status = e.paid ? 'paid' : (Number(e.paidAmt)>0 ? 'partial' : 'unpaid');
+            h += '<div class="cal-day-entry-row" data-day-entry="'+e.id+'">' +
+              '<div><div class="cal-shift-tag">'+(e.shift?shiftLabel(e.shift):'Delivery')+'</div>' +
+              '<div style="font-size:13px;color:var(--ink-soft);">'+liters(e.qty)+' × '+money(e.rate)+'/L</div></div>' +
+              '<div style="text-align:right;"><div class="row-amt num">'+money(e.amount)+'</div>' +
+              '<span class="badge '+status+'">'+status+'</span></div></div>';
+          });
+        }
+        dayCard.innerHTML = h;
+        dayCard.querySelectorAll('[data-day-entry]').forEach(function(row){
+          row.addEventListener('click', function(){ closeSheet(); openSupplyForm(row.getAttribute('data-day-entry')); });
+        });
+      }
+
+      function renderCal(){
+        var parts = calYm.split('-'); var y = Number(parts[0]), m = Number(parts[1])-1;
+        var startDow = new Date(y,m,1).getDay();
+        var daysInMonth = new Date(y,m+1,0).getDate();
+        var daysInPrevMonth = new Date(y,m,0).getDate();
+        var todayIso = todayISO();
+        var h = '<div class="mini-cal-head">' +
+          '<button type="button" class="cal-nav-btn" id="ccPrev">&lsaquo;</button>' +
+          '<div class="mini-cal-title">'+monthLabel(calYm)+'</div>' +
+          '<button type="button" class="cal-nav-btn" id="ccNext">&rsaquo;</button>' +
+          '</div><div class="mini-cal-grid">';
+        ['S','M','T','W','T','F','S'].forEach(function(dw){ h += '<div class="mini-cal-dow">'+dw+'</div>'; });
+        for(var i=0;i<startDow;i++){
+          h += '<div class="cal-day other-month">'+(daysInPrevMonth-startDow+1+i)+'</div>';
+        }
+        for(var dnum=1; dnum<=daysInMonth; dnum++){
+          var iso = isoOf(y,m,dnum);
+          var entries = entriesFor(iso);
+          var hasMorning = entries.some(function(e){return e.shift==='morning';});
+          var hasEvening = entries.some(function(e){return e.shift==='evening';});
+          var hasOther = entries.some(function(e){return !e.shift;});
+          var cls = 'cal-day' + (selectedDay===iso?' selected':'') + (iso===todayIso?' today':'');
+          var dots = '';
+          if(hasMorning || hasEvening || hasOther){
+            dots = '<div class="cal-dots">';
+            if(hasMorning) dots += '<span class="cal-dot morning"></span>';
+            if(hasEvening) dots += '<span class="cal-dot evening"></span>';
+            if(hasOther && !hasMorning && !hasEvening) dots += '<span class="cal-dot morning"></span>';
+            dots += '</div>';
+          }
+          h += '<div class="'+cls+'" data-date="'+iso+'">'+dnum+dots+'</div>';
+        }
+        var trailing = (7 - ((startDow+daysInMonth) % 7)) % 7;
+        for(var t=1;t<=trailing;t++){ h += '<div class="cal-day other-month">'+t+'</div>'; }
+        h += '</div>';
+        calEl.innerHTML = h;
+        calEl.querySelector('#ccPrev').addEventListener('click', function(){ shiftMonth(-1); });
+        calEl.querySelector('#ccNext').addEventListener('click', function(){ shiftMonth(1); });
+        calEl.querySelectorAll('.cal-day[data-date]').forEach(function(el){
+          el.addEventListener('click', function(){
+            selectedDay = el.getAttribute('data-date');
+            renderCal(); renderDay();
+          });
+        });
+      }
+      function shiftMonth(delta){
+        var parts = calYm.split('-'); var y = Number(parts[0]), m = Number(parts[1])-1;
+        m += delta;
+        if(m<0){ m=11; y--; } else if(m>11){ m=0; y++; }
+        calYm = y+'-'+pad2(m+1);
+        renderCal();
+      }
+
+      renderCal();
+      renderDay();
+
+      addBtn.addEventListener('click', function(){
+        closeSheet();
+        openSupplyForm(null, { clientId: c.id, date: selectedDay || todayISO() });
       });
     });
   }
@@ -2017,21 +2234,24 @@
     {v:'checkup', label:'Checkup / Note'}
   ];
 
-  function openHealthForm(cattleId, id, afterSave){
+  function openHealthForm(cattleId, id, afterSave, presetType){
     var editing = id ? healthById(id) : null;
-    var type = editing ? editing.type : 'ai';
+    var type = editing ? editing.type : (presetType || 'ai');
+    var todayD = todayISO();
+    var defaultNextDue = editing ? (editing.nextDue||'') :
+      (type==='deworming' ? addDays(todayD, 90) : (type==='vaccination' ? addDays(todayD, 180) : ''));
     var html = '<h2>'+(editing?'Edit':'Log')+' Health Event</h2>';
     html += '<div class="field"><label>Type</label><select id="hType">' +
       HEALTH_TYPES.map(function(t){ return '<option value="'+t.v+'"'+(t.v===type?' selected':'')+'>'+t.label+'</option>'; }).join('') +
       '</select></div>';
-    html += '<div class="field"><label>Date</label><input type="date" id="hDate" value="'+(editing?editing.date:todayISO())+'"></div>';
+    html += '<div class="field"><label>Date</label><input type="date" id="hDate" value="'+(editing?editing.date:todayD)+'"></div>';
     html += '<div id="hResultWrap" class="field" style="display:none;"><label>Result</label><select id="hResult">' +
       '<option value="pregnant"'+(editing&&editing.result==='pregnant'?' selected':'')+'>Pregnant</option>' +
       '<option value="not_pregnant"'+(editing&&editing.result==='not_pregnant'?' selected':'')+'>Not Pregnant</option>' +
       '<option value="inconclusive"'+(editing&&editing.result==='inconclusive'?' selected':'')+'>Inconclusive</option>' +
       '</select></div>';
     html += '<div id="hVaccineWrap" class="field" style="display:none;"><label>Vaccine name</label><input type="text" id="hVaccine" value="'+(editing?esc(editing.vaccine||''):'')+'" placeholder="e.g. FMD"></div>';
-    html += '<div id="hNextDueWrap" class="field" style="display:none;"><label>Next due (optional)</label><input type="date" id="hNextDue" value="'+(editing?(editing.nextDue||''):'')+'"></div>';
+    html += '<div id="hNextDueWrap" class="field" style="display:none;"><label>Next due (optional)</label><input type="date" id="hNextDue" value="'+esc(defaultNextDue)+'"></div>';
     html += '<div class="field"><label>Notes (optional)</label><input type="text" id="hNotes" value="'+(editing?esc(editing.notes||''):'')+'"></div>';
     html += '<div class="btn-row" style="margin-top:6px;">';
     if(editing) html += '<button class="btn btn-danger" id="hDelete">Delete</button>';
@@ -2166,7 +2386,7 @@
     var rows = entries.map(function(e){
       totalBilled += Number(e.amount)||0;
       totalPaid += Number(e.paidAmt)||0;
-      return '<tr><td>'+dateShort(e.date)+'</td><td class="num">'+liters(e.qty)+'</td><td class="num">'+money(e.rate)+'</td>' +
+      return '<tr><td>'+dateShort(e.date)+'</td><td>'+(e.shift?shiftLabel(e.shift):'—')+'</td><td class="num">'+liters(e.qty)+'</td><td class="num">'+money(e.rate)+'</td>' +
         '<td class="num">'+money(e.amount)+'</td><td class="num">'+money(e.paidAmt)+'</td><td class="num">'+money(supplyDue(e))+'</td></tr>';
     }).join('');
     var due = Math.round((totalBilled-totalPaid)*100)/100;
@@ -2176,7 +2396,7 @@
     if(!entries.length){
       html += '<p style="font-size:13px;color:#555;">No supply entries in this date range.</p>';
     } else {
-      html += '<table><thead><tr><th>Date</th><th class="num">Qty</th><th class="num">Rate</th><th class="num">Amount</th><th class="num">Paid</th><th class="num">Due</th></tr></thead><tbody>'+rows+'</tbody></table>';
+      html += '<table><thead><tr><th>Date</th><th>Shift</th><th class="num">Qty</th><th class="num">Rate</th><th class="num">Amount</th><th class="num">Paid</th><th class="num">Due</th></tr></thead><tbody>'+rows+'</tbody></table>';
     }
     html += '<div class="stmt-totals">' +
       '<div><span>Total billed</span><b class="num">'+money(totalBilled)+'</b></div>' +
