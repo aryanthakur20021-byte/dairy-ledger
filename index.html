@@ -881,8 +881,10 @@
       return { state:'recheck', label:'Recheck needed', sub:'Inconclusive '+dateShort(lastCheck.date)+' · recheck '+(today>=recheckDue?'now':'around '+dateShort(recheckDue)), recheckDue:recheckDue, lastAI:lastAI, lastCheck:lastCheck, lastHeat:lastHeat };
     }
     if(lastCheck && lastCheck.result==='not_pregnant'){
-      var nextHeat1 = lastHeat ? addDays(lastHeat.date, 21) : null;
-      return { state:'open', label:'Open (not pregnant)', sub: lastHeat ? 'Last heat '+dateShort(lastHeat.date) : 'Checked '+dateShort(lastCheck.date), lastAI:lastAI, lastCheck:lastCheck, lastHeat:lastHeat, nextHeatEst:nextHeat1 };
+      var nextHeatFrom1 = lastHeat ? addDays(lastHeat.date, 18) : null;
+      var nextHeatTo1 = lastHeat ? addDays(lastHeat.date, 21) : null;
+      var sub1 = lastHeat ? 'Last heat '+dateShort(lastHeat.date)+' · next heat '+dateShort(nextHeatFrom1)+'–'+dateShort(nextHeatTo1) : 'Checked '+dateShort(lastCheck.date);
+      return { state:'open', label:'Open (not pregnant)', sub: sub1, lastAI:lastAI, lastCheck:lastCheck, lastHeat:lastHeat, nextHeatFrom:nextHeatFrom1, nextHeatTo:nextHeatTo1 };
     }
     if(lastAI){
       var checkDue = addDays(lastAI.date, 45);
@@ -892,7 +894,9 @@
       return { state:'fresh', label:'Milking', sub:daysBetween(lastCalving.date, today)+' days since calving', lastCalving:lastCalving, lastHeat:lastHeat };
     }
     if(lastHeat){
-      return { state:'open', label:'Open', sub:'Last heat '+dateShort(lastHeat.date), lastHeat:lastHeat, nextHeatEst:addDays(lastHeat.date, 21) };
+      var nextHeatFrom2 = addDays(lastHeat.date, 18);
+      var nextHeatTo2 = addDays(lastHeat.date, 21);
+      return { state:'open', label:'Open', sub:'Last heat '+dateShort(lastHeat.date)+' · next heat '+dateShort(nextHeatFrom2)+'–'+dateShort(nextHeatTo2), lastHeat:lastHeat, nextHeatFrom:nextHeatFrom2, nextHeatTo:nextHeatTo2 };
     }
     return { state:'none', label:'No breeding record', sub:'' };
   }
@@ -914,10 +918,15 @@
           out.push({cattleId:c.id, name:c.name, kind:'calving', label: du<=0 ? 'Calving due now' : 'Calving in ~'+du+'d', daysUntil:du});
         }
       }
-      if(st.state==='open' && st.nextHeatEst){
-        var dh = daysBetween(today, st.nextHeatEst);
-        if(dh <= 3 && dh >= -10){
-          out.push({cattleId:c.id, name:c.name, kind:'heat', label: dh<=0 ? 'Heat expected — watch closely' : 'Heat expected in ~'+dh+'d', daysUntil:dh});
+      if(st.state==='open' && st.nextHeatFrom && st.nextHeatTo){
+        var dFrom = daysBetween(today, st.nextHeatFrom);
+        var dTo = daysBetween(today, st.nextHeatTo);
+        if(dFrom <= 2 && dTo >= -7){
+          var heatLabel;
+          if(dFrom > 0) heatLabel = 'Heat expected in '+dFrom+'-'+dTo+'d (day 18–21)';
+          else if(dTo >= 0) heatLabel = 'Heat window now — watch closely (day 18–21)';
+          else heatLabel = 'Heat window passed '+(-dTo)+'d ago — check animal';
+          out.push({cattleId:c.id, name:c.name, kind:'heat', label:heatLabel, daysUntil:dTo});
         }
       }
       var events = healthByCattle(c.id);
