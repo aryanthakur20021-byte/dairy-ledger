@@ -2499,10 +2499,15 @@
     var lastDay = ym + '-' + (lastDayNum<10?'0'+lastDayNum:lastDayNum);
 
     var html = '<h2>Print Statement</h2>';
-    html += '<div class="field-row">' +
+    html += '<div class="field"><label>Period</label><div class="segmented" id="stmtMode">' +
+      '<button type="button" data-v="range" class="active">Date range</button>' +
+      '<button type="button" data-v="single">Single day</button>' +
+      '</div></div>';
+    html += '<div class="field-row" id="stmtRangeWrap">' +
       '<div class="field"><label>From</label><input type="date" id="stmtFrom" value="'+firstDay+'"></div>' +
       '<div class="field"><label>To</label><input type="date" id="stmtTo" value="'+lastDay+'"></div>' +
       '</div>';
+    html += '<div class="field" id="stmtDayWrap" style="display:none;"><label>Date</label><input type="date" id="stmtDay" value="'+todayISO()+'"></div>';
     if(db.clients.length > 1){
       html += '<div class="field"><label>Include clients</label><div class="pick-list" id="stmtClients">' +
         db.clients.map(function(x){
@@ -2515,10 +2520,21 @@
     html += '<button class="btn btn-ghost" id="stmtGo">Print</button>';
 
     openSheet(html, function(root){
+      var mode = 'range';
+      var modeWrap = root.querySelector('#stmtMode');
+      modeWrap.querySelectorAll('button').forEach(function(b){
+        b.addEventListener('click', function(){
+          modeWrap.querySelectorAll('button').forEach(function(x){ x.classList.remove('active'); });
+          b.classList.add('active'); mode = b.getAttribute('data-v');
+          root.querySelector('#stmtRangeWrap').style.display = mode==='range' ? '' : 'none';
+          root.querySelector('#stmtDayWrap').style.display = mode==='single' ? '' : 'none';
+        });
+      });
       function readForm(btn){
         var from = root.querySelector('#stmtFrom').value;
         var to = root.querySelector('#stmtTo').value;
-        if(!from || !to || from > to){ toast('Pick a valid date range'); btn.disabled = false; return null; }
+        if(mode==='single'){ from = to = root.querySelector('#stmtDay').value; }
+        if(!from || !to || from > to){ toast(mode==='single' ? 'Pick a date' : 'Pick a valid date range'); btn.disabled = false; return null; }
         var picked = [c];
         var pickWrap = root.querySelector('#stmtClients');
         if(pickWrap){
@@ -2567,7 +2583,7 @@
     sections.forEach(function(s){ s.subtotal = ['Subtotal', liters(r2(s.qty)), money(s.billed), money(s.paid), money(r2(s.billed-s.paid))]; });
     return {
       title: title, multi: clients.length > 1,
-      sub: (phone ? phone+' · ' : '') + 'Statement: '+dateShort(from)+' – '+dateShort(to),
+      sub: (phone ? phone+' · ' : '') + (from===to ? 'Statement: '+dateLabel(from) : 'Statement: '+dateShort(from)+' – '+dateShort(to)),
       sections: sections,
       totals: [['Total milk', liters(r2(g.qty))], ['Total billed', money(g.billed)], ['Total paid', money(g.paid)]],
       due: [clients.length > 1 ? 'Grand total due' : 'Balance due', money(r2(g.billed-g.paid))],
