@@ -372,7 +372,7 @@
   #printArea{ display:none; }
   #printArea h1{ font-size:20px; margin-bottom:2px; }
   #printArea .stmt-sub{ font-size:12.5px; color:#444; margin-bottom:18px; }
-  #printArea table{ width:100%; border-collapse:collapse; font-size:12.5px; }
+  #printArea table{ width:100%; border-collapse:collapse; font-size:12.5px; table-layout:fixed; }
   #printArea th, #printArea td{ text-align:left; padding:6px 8px; border-bottom:1px solid #ccc; }
   #printArea th{ text-transform:uppercase; font-size:10.5px; letter-spacing:.04em; color:#555; }
   #printArea td.num, #printArea th.num{ text-align:right; font-variant-numeric:tabular-nums; }
@@ -380,6 +380,11 @@
   #printArea .stmt-totals div{ display:flex; justify-content:space-between; padding:4px 0; font-size:13px; }
   #printArea .stmt-totals .due{ font-weight:800; font-size:15px; border-top:2px solid #000; margin-top:4px; padding-top:8px; }
   #printArea .stmt-gen{ margin-top:24px; font-size:10.5px; color:#777; }
+  #printArea h2{ font-size:14px; margin:18px 0 6px; }
+  #printArea .stmt-subtotal td{ font-weight:700; border-bottom:2px solid #999; }
+  .pick-list{ display:flex; flex-wrap:wrap; gap:8px; }
+  .pick-list label{ display:flex; align-items:center; gap:6px; padding:8px 12px; border:1px solid var(--line); border-radius:999px; font-size:13.5px; cursor:pointer; text-transform:none; letter-spacing:0; font-weight:600; color:var(--ink); margin:0; }
+  .pick-list input{ width:auto; margin:0; accent-color:var(--good); }
   @media print{
     body{ background:#fff; }
     .app, .tabbar, .fab, .sheet, .sheet-overlay, .toast{ display:none !important; }
@@ -605,11 +610,13 @@
 
   function attachCloudListeners(uidStr){
     detachCloudListeners();
+    cloudLoaded = {};
     CLOUD_COLLECTIONS.forEach(function(coll){
       var ref = fb.fsMod.collection(fb.fs, 'users', uidStr, coll);
       var unsub = fb.fsMod.onSnapshot(ref, function(snap){
         db[coll] = snap.docs.map(function(d){ return d.data(); });
         save();
+        if(coll==='clients' || coll==='supply'){ cloudLoaded[coll] = true; fillStandingOrders(); }
         render();
       }, function(){ toast('Sync error — check your connection'); });
       cloudUnsubs.push(unsub);
@@ -954,6 +961,14 @@
     return out;
   }
 
+  /* First client after position `afterIdx` in the client list with no
+     supply entry yet on `iso` — drives the log-one-client-then-the-next flow. */
+  function nextUnloggedClient(iso, afterIdx){
+    var logged = {};
+    db.supply.forEach(function(e){ if(e.date===iso) logged[e.clientId] = true; });
+    for(var i=afterIdx+1;i<db.clients.length;i++){ if(!logged[db.clients[i].id]) return db.clients[i]; }
+    return null;
+  }
   function supplyDue(entry){ return Math.max(0, (Number(entry.amount)||0) - (Number(entry.paidAmt)||0)); }
   function supplySplit(e){
     if(!e) return { m:0, ev:0 };
@@ -1017,6 +1032,51 @@
       touched.push(e);
     }
     syncAfterWrite('supply', touched);
+  }
+
+  /* Daily fixed orders: a client with dailyMorn/dailyEve set gets one unpaid
+     supply entry auto-created for every day from dailyFrom through today.
+     Ids are deterministic ('so_'+client+'_'+date) so two devices filling the
+     same day write the same doc instead of duplicating it. A day is left
+     alone if the client already has any entry that date, or if the user
+     deleted that day's auto entry (recorded in client.skipDates). */
+  var cloudLoaded = {};
+  function standingId(clientId, iso){ return 'so_'+clientId+'_'+iso; }
+  function nextISO(iso){
+    var p = iso.split('-'); var d = new Date(Date.UTC(+p[0], +p[1]-1, +p[2]+1));
+    return d.toISOString().slice(0,10);
+  }
+  function fillStandingOrders(){
+    if(authUser && !(cloudLoaded.clients && cloudLoaded.supply)) return 0;
+    var today = todayISO(), added = [];
+    db.clients.forEach(function(c){
+      var m = Number(c.dailyMorn)||0, ev = Number(c.dailyEve)||0;
+      if(!(m+ev > 0) || !c.dailyFrom || c.dailyFrom > today) return;
+      var have = {};
+      db.supply.forEach(function(e){ if(e.clientId===c.id) have[e.date] = true; });
+      var skip = {}; (c.skipDates||[]).forEach(function(d){ skip[d] = true; });
+      var rate = Number(c.rate)||0, qty = Math.round((m+ev)*100)/100;
+      for(var d = c.dailyFrom, guard = 0; d <= today && guard < 400; d = nextISO(d), guard++){
+        if(have[d] || skip[d]) continue;
+        added.push({
+          id: standingId(c.id, d), date: d, clientId: c.id, standing: true,
+          morningQty: m, eveningQty: ev, qty: qty, rate: rate,
+          amount: Math.round(qty*rate*100)/100, paidAmt: 0, paid: false
+        });
+      }
+    });
+    if(added.length){
+      added.forEach(function(r){ db.supply.push(r); });
+      syncAfterWrite('supply', added);
+    }
+    return added.length;
+  }
+  function skipStandingDay(clientId, iso){
+    var c = clientById(clientId);
+    if(!c || !((Number(c.dailyMorn)||0)+(Number(c.dailyEve)||0) > 0)) return;
+    c.skipDates = (c.skipDates||[]).filter(function(d){ return d >= (c.dailyFrom||''); });
+    if(c.skipDates.indexOf(iso) < 0) c.skipDates.push(iso);
+    syncAfterWrite('clients', [c]);
   }
 
   /* ================= dom refs ================= */
@@ -1460,7 +1520,7 @@
         var breakdown = (sp.m>0 && sp.ev>0) ? ('🌅 '+liters(sp.m)+' + 🌙 '+liters(sp.ev)) : (sp.ev>0 ? '🌙 '+liters(sp.ev) : '🌅 '+liters(sp.m));
         html += '<div class="row" data-edit-supply="'+e.id+'">' +
           '<div class="row-main"><div class="row-title">'+esc(c?c.name:'Unknown')+'</div>' +
-          '<div class="row-sub">'+breakdown+' × '+money(e.rate)+'/L</div></div>' +
+          '<div class="row-sub">'+breakdown+' × '+money(e.rate)+'/L'+(e.standing?' · 🔁 daily':'')+'</div></div>' +
           '<div class="row-end"><div class="row-amt num">'+money(e.amount)+'</div>' +
           '<span class="badge '+status+'">'+status+'</span></div></div>';
       });
@@ -1503,14 +1563,15 @@
     var editing = entryId ? db.supply.find(function(e){return e.id===entryId;}) : null;
     if(!db.clients.length){ toast('Add a client first (More tab)'); return; }
     var prefillClient = prefill && prefill.clientId ? clientById(prefill.clientId) : null;
-    var defaultClient = prefillClient || db.clients[0];
+    var d0 = prefill && prefill.date ? prefill.date : todayISO();
+    var defaultClient = prefillClient || nextUnloggedClient(d0, -1) || db.clients[0];
     var clientOptions = db.clients.map(function(c){
       return '<option value="'+c.id+'"'+((editing?editing.clientId:defaultClient.id)===c.id?' selected':'')+'>'+esc(c.name)+'</option>';
     }).join('');
     var d = editing ? editing.date : (prefill && prefill.date ? prefill.date : todayISO());
     var split = editing ? supplySplit(editing) : { m:'', ev:'' };
     var rate = editing ? editing.rate : (defaultClient ? defaultClient.rate : '');
-    var status = editing ? (editing.paid ? 'paid' : (Number(editing.paidAmt)>0 ? 'partial' : 'unpaid')) : 'paid';
+    var status = editing ? (editing.paid ? 'paid' : (Number(editing.paidAmt)>0 ? 'partial' : 'unpaid')) : 'unpaid';
     var paidAmt = editing ? editing.paidAmt : '';
 
     var html = '<h2>'+(editing?'Edit':'Log')+' Milk Supply</h2>';
@@ -1670,7 +1731,9 @@
         }
 
         var rec = editing || {id:uid()};
-        rec.date = root.querySelector('#fDate').value || todayISO();
+        var newDate = root.querySelector('#fDate').value || todayISO();
+        if(editing && editing.standing && (editing.date!==newDate || editing.clientId!==clientIdV)) skipStandingDay(editing.clientId, editing.date);
+        rec.date = newDate;
         rec.clientId = clientIdV;
         rec.morningQty = mornV; rec.eveningQty = eveV;
         delete rec.shift;
@@ -1678,7 +1741,15 @@
         rec.paidAmt = pAmtFinal;
         rec.paid = rec.paidAmt >= amount - 0.004;
         if(!editing) db.supply.push(rec);
-        syncAfterWrite('supply', [rec]); closeSheet(); toast('Saved'); render();
+        syncAfterWrite('supply', [rec]); closeSheet(); render();
+        var nextC = editing ? null : nextUnloggedClient(rec.date, db.clients.findIndex(function(x){ return x.id===rec.clientId; }));
+        if(nextC){
+          toast('Saved — next: '+nextC.name);
+          openSupplyForm(null, { clientId: nextC.id, date: rec.date });
+          var m = document.getElementById('fMorn'); if(m) m.focus();
+        } else {
+          toast(!editing && !nextUnloggedClient(rec.date, -1) ? 'Saved — all clients done for this date' : 'Saved');
+        }
       });
 
       wireEnterChain(root, ['fMorn','fEve','fRate','fPaidAmt'], function(){
@@ -1689,7 +1760,8 @@
 
       var delBtn = root.querySelector('#fDelete');
       if(delBtn) delBtn.addEventListener('click', function(){
-        confirmDeleteThen('Delete Entry?', 'This supply entry will be permanently removed.', function(){
+        confirmDeleteThen('Delete Entry?', editing.standing ? 'This removes the daily order for this day only. It won\'t be added back.' : 'This supply entry will be permanently removed.', function(){
+          if(editing.standing) skipStandingDay(editing.clientId, editing.date);
           db.supply = db.supply.filter(function(e){return e.id!==editing.id;});
           syncAfterDelete('supply', editing.id); toast('Deleted'); render();
         });
@@ -1990,6 +2062,14 @@
     html += '<div class="field"><label>Name</label><input type="text" id="cName" enterkeyhint="next" value="'+(editing?esc(editing.name):'')+'" placeholder="e.g. Sharma Sir"></div>';
     html += '<div class="field"><label>Phone (optional)</label><input type="tel" id="cPhone" enterkeyhint="next" value="'+(editing?esc(editing.phone||''):'')+'"></div>';
     html += '<div class="field"><label>Default rate (₹/L)</label><input type="number" id="cRate" inputmode="decimal" step="0.5" enterkeyhint="done" value="'+(editing?editing.rate:'60')+'"></div>';
+    var dm = editing && Number(editing.dailyMorn) ? editing.dailyMorn : '', de = editing && Number(editing.dailyEve) ? editing.dailyEve : '';
+    html += '<div class="section-title" style="margin:6px 0 8px;">Daily fixed order (optional)</div>';
+    html += '<div class="field-row">' +
+      '<div class="field"><label>🌅 Morning (L)</label><input type="number" id="cDailyMorn" inputmode="decimal" step="0.1" enterkeyhint="next" value="'+dm+'"></div>' +
+      '<div class="field"><label>🌙 Evening (L)</label><input type="number" id="cDailyEve" inputmode="decimal" step="0.1" enterkeyhint="done" value="'+de+'"></div>' +
+      '</div>';
+    html += '<div class="field"><label>Starting from</label><input type="date" id="cDailyFrom" value="'+((editing&&editing.dailyFrom)||todayISO())+'"></div>';
+    html += '<div class="hint" style="margin:-6px 0 14px;">If set, this order is logged automatically every day as unpaid. To change one day, open that day\'s entry and edit it; to skip a day, delete it. Leave both blank to stop.</div>';
     if(editing) html += '<button class="btn btn-ghost" id="cPrintStatement" style="margin-bottom:14px;">Print Statement</button>';
     html += '<div class="btn-row" style="margin-top:6px;">';
     if(editing) html += '<button class="btn btn-danger" id="cDelete">Delete</button>';
@@ -2004,10 +2084,15 @@
         rec.name = name;
         rec.phone = root.querySelector('#cPhone').value.trim();
         rec.rate = parseFloat(root.querySelector('#cRate').value)||0;
+        rec.dailyMorn = parseFloat(root.querySelector('#cDailyMorn').value)||0;
+        rec.dailyEve = parseFloat(root.querySelector('#cDailyEve').value)||0;
+        rec.dailyFrom = root.querySelector('#cDailyFrom').value || todayISO();
         if(!editing) db.clients.push(rec);
-        syncAfterWrite('clients', [rec]); closeSheet(); toast('Saved'); render();
+        syncAfterWrite('clients', [rec]);
+        var n = fillStandingOrders();
+        closeSheet(); toast(n ? 'Saved — '+n+' daily entr'+(n===1?'y':'ies')+' added' : 'Saved'); render();
       });
-      wireEnterChain(root, ['cName','cPhone','cRate'], function(){ return ['cName','cPhone','cRate']; }, 'cSave');
+      wireEnterChain(root, ['cName','cPhone','cRate','cDailyMorn','cDailyEve'], function(){ return ['cName','cPhone','cRate','cDailyMorn','cDailyEve']; }, 'cSave');
       root.querySelector('#cName').focus();
       var printBtn = root.querySelector('#cPrintStatement');
       if(printBtn) printBtn.addEventListener('click', function(){ openStatementForm(editing.id); });
@@ -2418,50 +2503,195 @@
       '<div class="field"><label>From</label><input type="date" id="stmtFrom" value="'+firstDay+'"></div>' +
       '<div class="field"><label>To</label><input type="date" id="stmtTo" value="'+lastDay+'"></div>' +
       '</div>';
-    html += '<button class="btn btn-primary" id="stmtGo">Generate &amp; Print</button>';
+    if(db.clients.length > 1){
+      html += '<div class="field"><label>Include clients</label><div class="pick-list" id="stmtClients">' +
+        db.clients.map(function(x){
+          return '<label><input type="checkbox" value="'+x.id+'"'+(x.id===c.id?' checked':'')+'>'+esc(x.name)+'</label>';
+        }).join('') + '</div>' +
+        '<div class="hint">Tick more than one (e.g. the cow and buffalo accounts of the same customer) to get one invoice with a grand total.</div></div>';
+      html += '<div class="field"><label>Name on invoice</label><input type="text" id="stmtName" value="'+esc(c.name)+'"></div>';
+    }
+    html += '<button class="btn btn-primary" id="stmtShare" style="margin-bottom:10px;">Share as Photo (WhatsApp)</button>';
+    html += '<button class="btn btn-ghost" id="stmtGo">Print</button>';
 
     openSheet(html, function(root){
-      var goBtn = root.querySelector('#stmtGo');
-      guardOnce(goBtn, function(){
+      function readForm(btn){
         var from = root.querySelector('#stmtFrom').value;
         var to = root.querySelector('#stmtTo').value;
-        if(!from || !to || from > to){ toast('Pick a valid date range'); goBtn.disabled = false; return; }
-        buildAndPrintStatement(c, from, to);
+        if(!from || !to || from > to){ toast('Pick a valid date range'); btn.disabled = false; return null; }
+        var picked = [c];
+        var pickWrap = root.querySelector('#stmtClients');
+        if(pickWrap){
+          picked = Array.prototype.filter.call(pickWrap.querySelectorAll('input'), function(i){ return i.checked; })
+            .map(function(i){ return clientById(i.value); }).filter(Boolean);
+          if(!picked.length){ toast('Pick at least one client'); btn.disabled = false; return null; }
+        }
+        var nameEl = root.querySelector('#stmtName');
+        var title = (picked.length > 1 && nameEl && nameEl.value.trim()) || picked[0].name;
+        return statementData(picked, title, from, to);
+      }
+      var goBtn = root.querySelector('#stmtGo');
+      guardOnce(goBtn, function(){
+        var data = readForm(goBtn); if(!data) return;
+        printStatement(data);
         goBtn.disabled = false;
         closeSheet();
+      });
+      var shareBtn = root.querySelector('#stmtShare');
+      guardOnce(shareBtn, function(){
+        var data = readForm(shareBtn); if(!data) return;
+        shareStatementImage(data).then(function(){ shareBtn.disabled = false; });
       });
     });
   }
 
-  function buildAndPrintStatement(c, from, to){
-    var entries = db.supply.filter(function(e){ return e.clientId===c.id && e.date >= from && e.date <= to; })
-      .sort(function(a,b){ return a.date < b.date ? -1 : (a.date > b.date ? 1 : 0); });
-    var totalBilled = 0, totalPaid = 0;
-    var rows = entries.map(function(e){
-      totalBilled += Number(e.amount)||0;
-      totalPaid += Number(e.paidAmt)||0;
-      var sp = supplySplit(e);
-      return '<tr><td>'+dateShort(e.date)+'</td><td class="num">'+(sp.m>0?liters(sp.m):'—')+'</td><td class="num">'+(sp.ev>0?liters(sp.ev):'—')+'</td><td class="num">'+money(e.rate)+'</td>' +
-        '<td class="num">'+money(e.amount)+'</td><td class="num">'+money(e.paidAmt)+'</td><td class="num">'+money(supplyDue(e))+'</td></tr>';
-    }).join('');
-    var due = Math.round((totalBilled-totalPaid)*100)/100;
+  /* One statement across one or more client accounts (e.g. a customer's
+     separate cow and buffalo accounts): a section per account, then totals.
+     Both the print layout and the shareable image are drawn from this. */
+  function statementData(clients, title, from, to){
+    var g = { qty:0, billed:0, paid:0 }, phone = '';
+    var sections = clients.map(function(c){
+      if(!phone && c.phone) phone = c.phone;
+      var entries = db.supply.filter(function(e){ return e.clientId===c.id && e.date >= from && e.date <= to; })
+        .sort(function(a,b){ return a.date < b.date ? -1 : (a.date > b.date ? 1 : 0); });
+      var s = { name:c.name, rows:[], qty:0, billed:0, paid:0 };
+      entries.forEach(function(e){
+        var sp = supplySplit(e);
+        s.qty += Number(e.qty)||0; s.billed += Number(e.amount)||0; s.paid += Number(e.paidAmt)||0;
+        s.rows.push([dateShort(e.date), sp.m>0?liters(sp.m):'—', sp.ev>0?liters(sp.ev):'—', money(e.rate), money(e.amount), money(e.paidAmt), money(supplyDue(e))]);
+      });
+      g.qty += s.qty; g.billed += s.billed; g.paid += s.paid;
+      return s;
+    });
+    function r2(n){ return Math.round(n*100)/100; }
+    sections.forEach(function(s){ s.subtotal = ['Subtotal', liters(r2(s.qty)), money(s.billed), money(s.paid), money(r2(s.billed-s.paid))]; });
+    return {
+      title: title, multi: clients.length > 1,
+      sub: (phone ? phone+' · ' : '') + 'Statement: '+dateShort(from)+' – '+dateShort(to),
+      sections: sections,
+      totals: [['Total milk', liters(r2(g.qty))], ['Total billed', money(g.billed)], ['Total paid', money(g.paid)]],
+      due: [clients.length > 1 ? 'Grand total due' : 'Balance due', money(r2(g.billed-g.paid))],
+      generated: 'Generated on '+dateLabel(todayISO()),
+      fileName: 'statement-'+title.replace(/[^a-z0-9]+/gi,'-').replace(/^-|-$/g,'').toLowerCase()+'-'+from+'.png'
+    };
+  }
+  var STMT_HEAD = ['Date','Morning','Evening','Rate','Amount','Paid','Due'];
 
-    var html = '<h1>'+esc(c.name)+'</h1>';
-    html += '<div class="stmt-sub">'+(c.phone?esc(c.phone)+' &middot; ':'')+'Statement: '+dateShort(from)+' &ndash; '+dateShort(to)+'</div>';
-    if(!entries.length){
-      html += '<p style="font-size:13px;color:#555;">No supply entries in this date range.</p>';
-    } else {
-      html += '<table><thead><tr><th>Date</th><th class="num">Morning</th><th class="num">Evening</th><th class="num">Rate</th><th class="num">Amount</th><th class="num">Paid</th><th class="num">Due</th></tr></thead><tbody>'+rows+'</tbody></table>';
-    }
-    html += '<div class="stmt-totals">' +
-      '<div><span>Total billed</span><b class="num">'+money(totalBilled)+'</b></div>' +
-      '<div><span>Total paid</span><b class="num">'+money(totalPaid)+'</b></div>' +
-      '<div class="due"><span>Balance due</span><b class="num">'+money(due)+'</b></div>' +
-      '</div>';
-    html += '<div class="stmt-gen">Generated on '+dateLabel(todayISO())+'</div>';
-
+  function printStatement(d){
+    var html = '<h1>'+esc(d.title)+'</h1><div class="stmt-sub">'+esc(d.sub)+'</div>';
+    d.sections.forEach(function(s){
+      if(d.multi) html += '<h2>'+esc(s.name)+'</h2>';
+      if(!s.rows.length){ html += '<p style="font-size:13px;color:#555;">No supply entries in this date range.</p>'; return; }
+      html += '<table><thead><tr>' + STMT_HEAD.map(function(h,i){ return '<th'+(i?' class="num"':'')+'>'+h+'</th>'; }).join('') + '</tr></thead><tbody>';
+      s.rows.forEach(function(r){ html += '<tr>' + r.map(function(v,i){ return '<td'+(i?' class="num"':'')+'>'+esc(v)+'</td>'; }).join('') + '</tr>'; });
+      if(d.multi){
+        var t = s.subtotal;
+        html += '<tr class="stmt-subtotal"><td>'+t[0]+'</td><td class="num" colspan="3">'+esc(t[1])+'</td><td class="num">'+esc(t[2])+'</td><td class="num">'+esc(t[3])+'</td><td class="num">'+esc(t[4])+'</td></tr>';
+      }
+      html += '</tbody></table>';
+    });
+    html += '<div class="stmt-totals">' + d.totals.map(function(t){ return '<div><span>'+t[0]+'</span><b class="num">'+esc(t[1])+'</b></div>'; }).join('') +
+      '<div class="due"><span>'+d.due[0]+'</span><b class="num">'+esc(d.due[1])+'</b></div></div>';
+    html += '<div class="stmt-gen">'+esc(d.generated)+'</div>';
     document.getElementById('printArea').innerHTML = html;
     window.print();
+  }
+
+  /* Draws the statement onto a canvas (no libraries — the app has no
+     external dependencies) and hands the PNG to the phone's share sheet so
+     it can go straight to WhatsApp. Falls back to downloading the image. */
+  function drawStatementCanvas(d){
+    var W = 760, PAD = 36, S = 2;
+    var SERIF = 'Georgia, "Times New Roman", serif';
+    var SANS = '-apple-system, "Segoe UI", Roboto, Arial, sans-serif';
+    var colX = [PAD, 250, 350, 440, 540, 630, W-PAD]; // right edges for cols 1..6, left edge for col 0
+    var ROW = 30;
+
+    // measure height first
+    var h = PAD + 40 + 26 + 18;
+    d.sections.forEach(function(s){
+      if(d.multi) h += 38;
+      h += s.rows.length ? (ROW + s.rows.length*ROW + (d.multi?ROW+6:0)) : 28;
+      h += 14;
+    });
+    h += 18 + d.totals.length*28 + 50 + 40 + PAD;
+
+    var cv = document.createElement('canvas');
+    cv.width = W*S; cv.height = h*S;
+    var x = cv.getContext('2d');
+    x.scale(S, S);
+    x.fillStyle = '#fffdf8'; x.fillRect(0, 0, W, h);
+    x.fillStyle = '#3f7a4e'; x.fillRect(0, 0, W, 8);
+
+    var yy = PAD + 28;
+    x.fillStyle = '#1d1a14'; x.font = '600 28px '+SERIF; x.textBaseline = 'alphabetic';
+    x.fillText(d.title, PAD, yy);
+    yy += 26; x.fillStyle = '#555'; x.font = '14px '+SANS; x.fillText(d.sub, PAD, yy);
+    yy += 18;
+
+    function cell(txt, i, y, bold){
+      x.font = (bold?'700 ':'')+'14px '+SANS;
+      if(i===0){ x.textAlign = 'left'; x.fillText(txt, colX[0], y); }
+      else { x.textAlign = 'right'; x.fillText(txt, colX[i], y); }
+      x.textAlign = 'left';
+    }
+    function line(y, color, wdt){ x.strokeStyle = color; x.lineWidth = wdt; x.beginPath(); x.moveTo(PAD, y); x.lineTo(W-PAD, y); x.stroke(); }
+
+    d.sections.forEach(function(s){
+      if(d.multi){ yy += 30; x.fillStyle = '#1d1a14'; x.font = '600 18px '+SERIF; x.fillText(s.name, PAD, yy); yy += 8; }
+      if(!s.rows.length){ yy += 22; x.fillStyle = '#666'; x.font = '14px '+SANS; x.fillText('No supply entries in this date range.', PAD, yy); yy += 6; yy += 14; return; }
+      yy += ROW - 8;
+      x.fillStyle = '#777'; x.font = '700 11px '+SANS;
+      STMT_HEAD.forEach(function(hd, i){ x.textAlign = i ? 'right' : 'left'; x.fillText(hd.toUpperCase(), colX[i], yy); });
+      x.textAlign = 'left';
+      line(yy+10, '#d8d2c4', 1); yy += 8;
+      s.rows.forEach(function(r){
+        yy += ROW; x.fillStyle = '#1d1a14';
+        r.forEach(function(v, i){ cell(v, i, yy - 8, false); });
+        line(yy+2, '#ece6d8', 1);
+      });
+      if(d.multi){
+        yy += ROW; x.fillStyle = '#1d1a14';
+        var t = s.subtotal;
+        cell(t[0], 0, yy-8, true); cell(t[1], 3, yy-8, true); cell(t[2], 4, yy-8, true); cell(t[3], 5, yy-8, true); cell(t[4], 6, yy-8, true);
+        line(yy+2, '#999', 2); yy += 6;
+      }
+      yy += 14;
+    });
+
+    var tx = W - PAD - 300;
+    yy += 18;
+    d.totals.forEach(function(t){
+      yy += 28; x.fillStyle = '#333'; x.font = '15px '+SANS; x.textAlign = 'left'; x.fillText(t[0], tx, yy);
+      x.font = '700 15px '+SANS; x.textAlign = 'right'; x.fillText(t[1], W-PAD, yy); x.textAlign = 'left';
+    });
+    yy += 16; x.strokeStyle = '#1d1a14'; x.lineWidth = 2; x.beginPath(); x.moveTo(tx, yy); x.lineTo(W-PAD, yy); x.stroke();
+    yy += 34; x.fillStyle = '#b0432c'; x.font = '800 20px '+SANS; x.fillText(d.due[0], tx, yy);
+    x.textAlign = 'right'; x.fillText(d.due[1], W-PAD, yy); x.textAlign = 'left';
+    yy += 40; x.fillStyle = '#888'; x.font = '12px '+SANS; x.fillText(d.generated, PAD, yy);
+    return cv;
+  }
+
+  function shareStatementImage(d){
+    var cv = drawStatementCanvas(d);
+    return new Promise(function(resolve){
+      cv.toBlob(function(blob){
+        if(!blob){ toast('Could not create image'); resolve(); return; }
+        var file = null;
+        try{ file = new File([blob], d.fileName, {type:'image/png'}); }catch(e){}
+        if(file && navigator.canShare && navigator.canShare({files:[file]})){
+          navigator.share({files:[file], title:d.title}).then(function(){ closeSheet(); }, function(){}).then(resolve);
+          return;
+        }
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement('a');
+        a.href = url; a.download = d.fileName;
+        document.body.appendChild(a); a.click(); document.body.removeChild(a);
+        setTimeout(function(){ URL.revokeObjectURL(url); }, 4000);
+        toast('Image saved — attach it in WhatsApp');
+        resolve();
+      }, 'image/png');
+    });
   }
 
   function lastBackupLabel(){
@@ -2519,8 +2749,12 @@
   }
 
   $fab.classList.toggle('hidden', !!FAB_HIDDEN_TABS[state.tab]);
+  if(!localStorage.getItem(AUTH_FLAG_KEY)) fillStandingOrders();
   render();
   restoreSession();
+  document.addEventListener('visibilitychange', function(){
+    if(document.visibilityState==='visible' && fillStandingOrders()) render();
+  });
 
   if('serviceWorker' in navigator && (location.protocol==='http:' || location.protocol==='https:')){
     window.addEventListener('load', function(){
